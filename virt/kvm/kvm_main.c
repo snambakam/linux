@@ -4404,7 +4404,7 @@ static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id
 
 	kvm_vcpu_init(vcpu, kvm, id);
 
-	r = kvm_arch_vcpu_create(vcpu);
+	r = kvm_arch_vcpu_create(vcpu, plane);
 	if (r)
 		goto vcpu_free_common;
 
