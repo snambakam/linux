@@ -827,6 +827,7 @@ static long __kvm_gmem_populate(struct kvm *kvm, struct kvm_memory_slot *slot,
 				struct file *file, gfn_t gfn, struct page *src_page,
 				kvm_gmem_populate_cb post_populate, void *opaque)
 {
+	struct kvm_plane *plane0 = kvm->planes[0];
 	pgoff_t index = kvm_gmem_get_index(slot, gfn);
 	struct folio *folio;
 	kvm_pfn_t pfn;
@@ -842,7 +843,7 @@ static long __kvm_gmem_populate(struct kvm *kvm, struct kvm_memory_slot *slot,
 
 	folio_unlock(folio);
 
-	if (!kvm_range_has_memory_attributes(kvm, gfn, gfn + 1,
+	if (!kvm_range_has_memory_attributes(plane0, gfn, gfn + 1,
 					     KVM_MEMORY_ATTRIBUTE_PRIVATE,
 					     KVM_MEMORY_ATTRIBUTE_PRIVATE)) {
 		ret = -EINVAL;
