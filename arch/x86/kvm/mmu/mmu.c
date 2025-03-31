@@ -3100,7 +3100,7 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 	}
 
 	if (unlikely(is_noslot_pfn(pfn))) {
-		vcpu->stat.pf_mmio_spte_created++;
+		vcpu->stat->pf_mmio_spte_created++;
 		mark_mmio_spte(vcpu, sptep, gfn, pte_access);
 		if (flush)
 			kvm_flush_remote_tlbs_gfn(vcpu->kvm, gfn, level);
@@ -3807,7 +3807,7 @@ static int fast_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 	walk_shadow_page_lockless_end(vcpu);
 
 	if (ret != RET_PF_INVALID)
-		vcpu->stat.pf_fast++;
+		vcpu->stat->pf_fast++;
 
 	return ret;
 }
@@ -4600,7 +4600,7 @@ void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu, struct kvm_async_pf *work)
 	 * truly spurious and never trigger emulation
 	 */
 	if (r == RET_PF_FIXED)
-		vcpu->stat.pf_fixed++;
+		vcpu->stat->pf_fixed++;
 }
 
 static void kvm_mmu_finish_page_fault(struct kvm_vcpu *vcpu,
@@ -6527,7 +6527,7 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 	}
 
 	if (r == RET_PF_INVALID) {
-		vcpu->stat.pf_taken++;
+		vcpu->stat->pf_taken++;
 
 		r = kvm_mmu_do_page_fault(vcpu, cr2_or_gpa, error_code, false,
 					  &emulation_type, NULL);
@@ -6543,11 +6543,11 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 						&emulation_type);
 
 	if (r == RET_PF_FIXED)
-		vcpu->stat.pf_fixed++;
+		vcpu->stat->pf_fixed++;
 	else if (r == RET_PF_EMULATE)
-		vcpu->stat.pf_emulate++;
+		vcpu->stat->pf_emulate++;
 	else if (r == RET_PF_SPURIOUS)
-		vcpu->stat.pf_spurious++;
+		vcpu->stat->pf_spurious++;
 
 	/*
 	 * None of handle_mmio_page_fault(), kvm_mmu_do_page_fault(), or
@@ -6661,7 +6661,7 @@ void kvm_mmu_invlpg(struct kvm_vcpu *vcpu, gva_t gva)
 	 * done here for them.
 	 */
 	kvm_mmu_invalidate_addr(vcpu, vcpu->arch.walk_mmu, gva, KVM_MMU_ROOTS_ALL);
-	++vcpu->stat.invlpg;
+	++vcpu->stat->invlpg;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_mmu_invlpg);
 
@@ -6683,7 +6683,7 @@ void kvm_mmu_invpcid_gva(struct kvm_vcpu *vcpu, gva_t gva, unsigned long pcid)
 
 	if (roots)
 		kvm_mmu_invalidate_addr(vcpu, mmu, gva, roots);
-	++vcpu->stat.invlpg;
+	++vcpu->stat->invlpg;
 
 	/*
 	 * Mappings not reachable via the current cr3 or the prev_roots will be

@@ -4832,7 +4832,7 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 				       svm->sev_es.ghcb_sa);
 	}
 	case SVM_VMGEXIT_NMI_COMPLETE:
-		++vcpu->stat.nmi_window_exits;
+		++vcpu->stat->nmi_window_exits;
 		svm->nmi_masked = false;
 		kvm_make_request(KVM_REQ_EVENT, vcpu);
 		return 1;
