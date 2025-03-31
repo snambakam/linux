@@ -1436,7 +1436,7 @@ static void svm_vcpu_put(struct kvm_vcpu *vcpu)
 
 	svm_prepare_host_switch(vcpu);
 
-	++vcpu->stat.host_state_reload;
+	++vcpu->stat->host_state_reload;
 }
 
 static unsigned long svm_get_rflags(struct kvm_vcpu *vcpu)
@@ -2115,7 +2115,7 @@ static int io_interception(struct kvm_vcpu *vcpu)
 	int size, in, string;
 	unsigned port;
 
-	++vcpu->stat.io_exits;
+	++vcpu->stat->io_exits;
 	string = (io_info & SVM_IOIO_STR_MASK) != 0;
 	in = (io_info & SVM_IOIO_TYPE_MASK) != 0;
 	port = io_info >> 16;
@@ -2145,7 +2145,7 @@ static int smi_interception(struct kvm_vcpu *vcpu)
 
 static int intr_interception(struct kvm_vcpu *vcpu)
 {
-	++vcpu->stat.irq_exits;
+	++vcpu->stat->irq_exits;
 	return 1;
 }
 
@@ -2470,7 +2470,7 @@ static int iret_interception(struct kvm_vcpu *vcpu)
 
 	WARN_ON_ONCE(sev_es_guest(vcpu->kvm));
 
-	++vcpu->stat.nmi_window_exits;
+	++vcpu->stat->nmi_window_exits;
 	svm->awaiting_iret_completion = true;
 
 	svm_clr_iret_intercept(svm);
@@ -3145,7 +3145,7 @@ static int interrupt_window_interception(struct kvm_vcpu *vcpu)
 	 */
 	kvm_clear_apicv_inhibit(vcpu->kvm, APICV_INHIBIT_REASON_IRQWIN);
 
-	++vcpu->stat.irq_window_exits;
+	++vcpu->stat->irq_window_exits;
 	return 1;
 }
 
@@ -3682,7 +3682,7 @@ static void svm_inject_nmi(struct kvm_vcpu *vcpu)
 		svm->nmi_masked = true;
 		svm_set_iret_intercept(svm);
 	}
-	++vcpu->stat.nmi_injections;
+	++vcpu->stat->nmi_injections;
 }
 
 static bool svm_is_vnmi_pending(struct kvm_vcpu *vcpu)
@@ -3713,7 +3713,7 @@ static bool svm_set_vnmi_pending(struct kvm_vcpu *vcpu)
 	 * the NMI is "injected", but for all intents and purposes, passing the
 	 * NMI off to hardware counts as injection.
 	 */
-	++vcpu->stat.nmi_injections;
+	++vcpu->stat->nmi_injections;
 
 	return true;
 }
