@@ -482,20 +482,19 @@ static void kvm_vcpu_destroy(struct kvm_vcpu *vcpu)
 
 void kvm_destroy_vcpus(struct kvm *kvm)
 {
+	int j;
 	unsigned long i;
 	struct kvm_vcpu *vcpu;
 
-	kvm_for_each_vcpu(i, vcpu, kvm) {
-		kvm_vcpu_destroy(vcpu);
-		xa_erase(&kvm->vcpu_array, i);
+	for (j = ARRAY_SIZE(kvm->planes) - 1; j >= 0; j--) {
+		struct kvm_plane *plane = kvm->planes[j];
+		if (!plane)
+			continue;
 
-		/*
-		 * Assert that the vCPU isn't visible in any way, to ensure KVM
-		 * doesn't trigger a use-after-free if destroying vCPUs results
-		 * in VM-wide request, e.g. to flush remote TLBs when tearing
-		 * down MMUs, or to mark the VM dead if a KVM_BUG_ON() fires.
-		 */
-		WARN_ON_ONCE(xa_load(&kvm->vcpu_array, i) || kvm_get_vcpu(kvm, i));
+		kvm_for_each_plane_vcpu(i, vcpu, plane) {
+			kvm_vcpu_destroy(vcpu);
+			xa_erase(&plane->vcpu_array, i);
+		}
 	}
 
 	atomic_set(&kvm->online_vcpus, 0);
@@ -1117,6 +1116,7 @@ static struct kvm_plane *kvm_create_vm_plane(struct kvm *kvm, unsigned plane_id)
 	plane->kvm = kvm;
 	plane->plane = plane_id;
 
+	xa_init(&plane->vcpu_array);
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
 	xa_init(&plane->mem_attr_array);
 #endif
@@ -1144,7 +1144,6 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 	mutex_init(&kvm->slots_arch_lock);
 	spin_lock_init(&kvm->mn_invalidate_lock);
 	rcuwait_init(&kvm->mn_memslots_update_rcuwait);
-	xa_init(&kvm->vcpu_array);
 
 	INIT_LIST_HEAD(&kvm->gpc_list);
 	spin_lock_init(&kvm->gpc_lock);
@@ -4022,6 +4021,7 @@ void kvm_vcpu_on_spin(struct kvm_vcpu *me, bool yield_to_kernel_mode)
 {
 	int nr_vcpus, start, i, idx, yielded;
 	struct kvm *kvm = me->kvm;
+	struct kvm_plane *plane = kvm->planes[me->plane];
 	struct kvm_vcpu *vcpu;
 	int try = 3;
 
@@ -4059,7 +4059,7 @@ void kvm_vcpu_on_spin(struct kvm_vcpu *me, bool yield_to_kernel_mode)
 		if (idx == me->vcpu_idx)
 			continue;
 
-		vcpu = xa_load(&kvm->vcpu_array, idx);
+		vcpu = xa_load(&plane->vcpu_array, idx);
 		if (!READ_ONCE(vcpu->ready))
 			continue;
 		if (kvm_vcpu_is_blocking(vcpu) && !vcpu_dy_runnable(vcpu))
@@ -4284,7 +4284,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, unsigned long id)
 	 */
 	vcpu->plane = -1;
 	vcpu->vcpu_idx = atomic_read(&kvm->online_vcpus);
-	r = xa_insert(&kvm->vcpu_array, vcpu->vcpu_idx, vcpu, GFP_KERNEL_ACCOUNT);
+	r = xa_insert(&kvm->planes[0]->vcpu_array, vcpu->vcpu_idx, vcpu, GFP_KERNEL_ACCOUNT);
 	WARN_ON_ONCE(r == -EBUSY);
 	if (r)
 		goto unlock_vcpu_destroy;
@@ -4320,7 +4320,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, unsigned long id)
 kvm_put_xa_erase:
 	mutex_unlock(&vcpu->mutex);
 	kvm_put_kvm_no_destroy(kvm);
-	xa_erase(&kvm->vcpu_array, vcpu->vcpu_idx);
+	xa_erase(&kvm->planes[0]->vcpu_array, vcpu->vcpu_idx);
 unlock_vcpu_destroy:
 	mutex_unlock(&kvm->lock);
 	kvm_dirty_ring_free(&vcpu->dirty_ring);
