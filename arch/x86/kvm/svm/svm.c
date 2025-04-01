@@ -3943,7 +3943,8 @@ static void svm_enable_irq_window(struct kvm_vcpu *vcpu)
 		 * the VM wide AVIC inhibition.
 		 */
 		if (!is_guest_mode(vcpu))
-			kvm_set_apicv_inhibit(vcpu->kvm, APICV_INHIBIT_REASON_IRQWIN);
+			kvm_set_apicv_inhibit(vcpu_to_plane(vcpu),
+					      APICV_INHIBIT_REASON_IRQWIN);
 
 		svm_set_vintr(svm);
 	}
