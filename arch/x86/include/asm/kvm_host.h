@@ -1114,6 +1114,10 @@ struct kvm_arch_memory_slot {
 };
 
 struct kvm_arch_plane {
+	struct mutex apic_map_lock;
+	struct kvm_apic_map __rcu *apic_map;
+	atomic_t apic_map_dirty;
+
 	unsigned long apicv_inhibit_reasons;
 };
 
@@ -1439,9 +1443,6 @@ struct kvm_arch {
 	struct kvm_pit *vpit;
 #endif
 	atomic_t vapics_in_nmi_mode;
-	struct mutex apic_map_lock;
-	struct kvm_apic_map __rcu *apic_map;
-	atomic_t apic_map_dirty;
 
 	bool apic_access_memslot_enabled;
 	bool apic_access_memslot_inhibited;
