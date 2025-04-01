@@ -281,7 +281,7 @@ otherwise.
 
 :Capability: basic, KVM_CAP_CHECK_EXTENSION_VM for vm ioctl
 :Architectures: all
-:Type: system ioctl, vm ioctl
+:Type: system ioctl, vm ioctl (all planes)
 :Parameters: extension identifier (KVM_CAP_*)
 :Returns: 0 if unsupported; 1 (or some other positive integer) if supported
 
@@ -6400,7 +6400,7 @@ Returns -EINVAL if called on a protected VM.
 
 :Capability: KVM_CAP_MEMORY_ATTRIBUTES
 :Architectures: x86
-:Type: vm ioctl
+:Type: vm ioctl (all planes)
 :Parameters: struct kvm_memory_attributes (in)
 :Returns: 0 on success, <0 on error
 
@@ -6588,6 +6588,46 @@ KVM_S390_KEYOP_SSKE
   Sets the storage key for the guest address ``guest_addr`` to the key
   specified in ``key``, returning the previous value in ``key``.
 
+.. _KVM_CREATE_PLANE:
+
+4.145 KVM_CREATE_PLANE
+----------------------
+
+:Capability: KVM_CAP_PLANES
+:Architectures: none
+:Type: vm ioctl
+:Parameters: plane id
+:Returns: a VM fd that can be used to control the new plane.
+
+Creates a new *plane*, i.e. a separate privilege level for the
+virtual machine.  Each plane has its own memory attributes,
+which can be used to enable more restricted permissions than
+what is allowed with ``KVM_SET_USER_MEMORY_REGION``.
+
+Each plane has a numeric id that is used when communicating
+with KVM through the :ref:`kvm_run <kvm_run>` struct.  While
+KVM is currently agnostic to whether low ids are more or less
+privileged, it is expected that this will not always be the
+case in the future.  For example KVM in the future may use
+the plane id when planes are supported by hardware (as is the
+case for VMPLs in AMD), or if KVM supports accelerated plane
+switch operations (as might be the case for Hyper-V VTLs).
+
+4.146 KVM_CREATE_VCPU_PLANE
+---------------------------
+
+:Capability: KVM_CAP_PLANES
+:Architectures: none
+:Type: vm ioctl (non default plane)
+:Parameters: vcpu file descriptor for the default plane
+:Returns: a vCPU fd that can be used to control the new plane
+          for the vCPU.
+
+Adds a vCPU to a plane; the new vCPU's id comes from the vCPU
+file descriptor that is passed in the argument.  Note that
+ because of how the API is defined, planes other than plane 0
+can only have a subset of the ids that are available in plane 0.
+
 .. _kvm_run:
 
 .. _KVM_CREATE_PLANE:
@@ -6643,7 +6683,50 @@ This field is ignored if KVM_CAP_IMMEDIATE_EXIT is not available.
 
 ::
 
-	__u8 padding1[6];
+	/* in/out */
+	__u8 plane;
+
+The plane that will be run (usually 0).
+
+While this is not yet supported, in the future KVM may handle plane
+switch in the kernel.  In this case, the output value of this field
+may differ from the input value.  However, automatic switch will
+have to be :ref:`explicitly enabled <KVM_ENABLE_CAP>`.
+
+For backwards compatibility, this field is ignored unless a plane
+other than plane 0 has been created.
+
+::
+
+        /* in/out */
+        __u16 suspended_planes;
+
+A bitmap of planes whose execution was suspended to run a
+higher-privileged plane, usually via a hypercall or due to
+an interrupt in the higher-privileged plane.
+
+KVM right now does not use this field; it may be used in the future
+once KVM implements in-kernel plane switch mechanisms.  Until that
+is the case, userspace can leave this to zero.
+
+::
+
+	/* in */
+	__u16 req_exit_planes;
+
+A bitmap of planes for which KVM should exit when they have a pending
+interrupt.  In general, userspace should set bits corresponding to
+planes that are more privileged than ``plane``; because KVM is agnostic
+to whether low ids are more or less privileged, these could be the bits
+*above* or *below* ``plane``.  In some cases it may make sense to request
+an exit for all planes---for example, if the higher-priority plane
+wants to be informed about interrupts pending in lower-priority planes,
+userspace may need to learn about those as well.
+
+The bit at position ``plane`` is ignored; interrupts for the current
+plane are never delivered to userspace.
+
+::
 
 	/* out */
 	__u32 exit_reason;
@@ -7438,6 +7521,44 @@ consisting of the following fields:
 ``gpa`` is set to the faulting IPA from the exception taken to KVM when
 the ``KVM_EXIT_ARM_SEA_FLAG_GPA_VALID`` flag is set. Otherwise, the value of
 ``gpa`` is unknown.
+
+::
+
+    /* KVM_EXIT_PLANE_EVENT */
+    struct {
+  #define KVM_PLANE_EVENT_INTERRUPT	1
+      __u16 cause;
+      __u16 pending_event_planes;
+      __u16 target;
+      __u16 padding;
+      __u32 flags;
+      __u64 extra;
+    } plane_event;
+
+Inform userspace of an event that affects a different plane than the
+currently executing one.
+
+On a ``KVM_EXIT_PLANE_EVENT`` exit, ``pending_event_planes`` is always
+set to the set of planes that have a pending interrupt.
+
+``cause`` provides the event that caused the exit, and the meaning of
+``target`` depends on the cause of the exit too.
+
+Right now the only defined cause is ``KVM_PLANE_EVENT_INTERRUPT``, i.e.
+an interrupt was received by a plane whose id is set in the
+``req_exit_planes`` bitmap.  In this case, ``target`` is the AND of
+``req_exit_planes`` and ``pending_event_planes``.
+
+``flags`` and ``extra`` are currently always 0.
+
+If userspace wants to switch to the target plane, it should move any
+shared state from the current plane to ``target``, and then invoke
+``KVM_RUN`` with ``kvm_run->plane`` set to ``target`` (and
+``req_exit_planes`` initialized accordingly).  Note that it's also
+valid to switch planes in response to other userspace exit codes, for
+example ``KVM_EXIT_X86_WRMSR`` or ``KVM_EXIT_HYPERCALL``.  Immediately
+after ``KVM_RUN`` is entered, KVM will check ``req_exit_planes`` and
+trigger a ``KVM_EXIT_PLANE_EVENT`` userspace exit if needed.
 
 ::
 
@@ -8976,20 +9097,27 @@ helpful if user space wants to emulate instructions which are not
 This capability can be enabled dynamically even if VCPUs were already
 created and are running.
 
-7.47 KVM_CAP_S390_HPAGE_2G
---------------------------
-
-:Architectures: s390
-:Parameters: none
-:Returns: 0 on success; -EINVAL if hpage_2g module parameter was not set,
-          cmma is enabled, or the VM has the KVM_VM_S390_UCONTROL
-          flag set; -EBUSY if vCPUs were already created for the VM.
-
-With this capability the KVM support for memory backing with 2g pages
-through hugetlbfs can be enabled for a VM. After the capability is
-enabled, cmma can't be enabled anymore and pfmfi and the storage key
-interpretation are disabled. If cmma has already been enabled or the
 hpage_2g module parameter is not set to 1, -EINVAL is returned.
+
+7.47 KVM_CAP_PLANES_FPU
+-----------------------
+
+:Architectures: x86
+:Parameters: arg[0] is 0 if each vCPU plane has a separate FPU,
+             1 if the FPU is shared
+:Type: vm
+
+When enabled, such as KVM_SET_XSAVE or KVM_SET_FPU *are* available for
+vCPU on all planes, but they will read and write the same data that is presented
+to other planes.  Note that KVM_GET/SET_XSAVE also allows access to some
+registers that are *not* part of FPU state; right now this is just PKRU.
+Those are never shared.
+
+KVM_CAP_PLANES_FPU is experimental; userspace must *not* assume that
+KVM_CAP_PLANES_FPU is present on x86 for *any* VM type and different
+VM types may or may not allow enabling KVM_CAP_PLANES_FPU.  Like for other
+capabilities, KVM_CAP_PLANES_FPU can be queried on the VM file descriptor;
+KVM_CHECK_EXTENSION returns 1 if it is possible to enable shared FPU mode.
 
 8. Other capabilities.
 ======================
@@ -9526,6 +9654,21 @@ available.
 KVM exits with the register state of either the L1 or L2 guest
 depending on which executed at the time of an exit. Userspace must
 take care to differentiate between these cases.
+
+8.46 KVM_CAP_PLANES
+-------------------
+
+:Capability: KVM_CAP_PLANES
+:Architectures: x86
+:Type: system, vm
+
+The capability returns the maximum plane id that can be passed to
+:ref:`KVM_CREATE_PLANE <KVM_CREATE_PLANE>`.  Because the maximum
+id can vary according to the machine type, it is recommended to
+check for this capability on the VM file descriptor.
+
+When called on the system file descriptor, KVM returns the highest
+value supported on any machine type.
 
 8.47 KVM_CAP_S390_VSIE_ESAMODE
 ------------------------------
