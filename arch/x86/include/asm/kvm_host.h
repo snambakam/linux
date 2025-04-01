@@ -947,6 +947,12 @@ struct kvm_vcpu_arch {
 	u64 ia32_xss;
 	u64 guest_supported_xss;
 
+	/*
+	 * Only valid in plane0.  The bitmask of planes that received
+	 * an interrupt, to be checked against req_exit_planes.
+	 */
+	atomic_t irr_pending_planes;
+
 	struct kvm_pio_request pio;
 	void *pio_data;
 	void *sev_pio_data;
