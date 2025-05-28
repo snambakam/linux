@@ -5321,6 +5321,14 @@ static void svm_free_plane(struct kvm_plane *plane)
 	kfree(svm_plane);
 }
 
+static unsigned svm_max_planes(struct kvm *kvm)
+{
+	if (____sev_snp_guest(kvm))
+		return sev_snp_max_planes(kvm);
+
+	return kvm_x86_default_max_planes(kvm);
+}
+
 struct kvm_x86_ops svm_x86_ops __initdata = {
 	.name = KBUILD_MODNAME,
 
@@ -5465,7 +5473,7 @@ struct kvm_x86_ops svm_x86_ops __initdata = {
 
 	.alloc_plane = svm_alloc_plane,
 	.free_plane = svm_free_plane,
-	.max_planes = kvm_x86_default_max_planes,
+	.max_planes = svm_max_planes,
 };
 
 /*
