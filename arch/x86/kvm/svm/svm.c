@@ -3143,7 +3143,7 @@ static int interrupt_window_interception(struct kvm_vcpu *vcpu)
 	 * All vCPUs which run still run nested, will remain to have their
 	 * AVIC still inhibited due to per-cpu AVIC inhibition.
 	 */
-	kvm_clear_apicv_inhibit(vcpu->kvm, APICV_INHIBIT_REASON_IRQWIN);
+	kvm_clear_apicv_inhibit(vcpu->kvm->planes[0], APICV_INHIBIT_REASON_IRQWIN);
 
 	++vcpu->stat->irq_window_exits;
 	return 1;
@@ -3734,7 +3734,7 @@ static void svm_inject_irq(struct kvm_vcpu *vcpu, bool reinjected)
 	}
 
 	trace_kvm_inj_virq(intr->nr, intr->soft, reinjected);
-	++vcpu->stat.irq_injections;
+	++vcpu->stat->irq_injections;
 
 	svm->vmcb->control.event_inj = intr->nr | SVM_EVTINJ_VALID | type;
 }
@@ -4407,7 +4407,7 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu, u64 run_flags)
 		/* Track VMRUNs that have made past consistency checking */
 		if (svm->nested.nested_run_pending &&
 		    !svm_is_vmrun_failure(svm->vmcb->control.exit_code))
-                        ++vcpu->stat.nested_run;
+                        ++vcpu->stat->nested_run;
 
 		svm->nested.nested_run_pending = 0;
 	}
