@@ -2603,11 +2603,6 @@ static inline bool kvm_arch_has_irq_bypass(void)
 	return enable_device_posted_irqs;
 }
 
-static inline bool kvm_arch_has_irq_bypass(void)
-{
-	return enable_device_posted_irqs;
-}
-
 int kvm_arch_nr_vcpu_planes(struct kvm *kvm);
 bool kvm_arch_planes_share_fpu(struct kvm *kvm);
 
