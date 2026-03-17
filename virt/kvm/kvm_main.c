@@ -5242,7 +5242,7 @@ static int kvm_vm_ioctl_reset_dirty_pages(struct kvm *kvm)
 	mutex_lock(&kvm->slots_lock);
 
 	kvm_for_each_vcpu(i, vcpu, kvm) {
-		r = kvm_dirty_ring_reset(vcpu->kvm, &vcpu->dirty_ring, &cleared);
+		r = kvm_dirty_ring_reset(vcpu->kvm, vcpu->dirty_ring, &cleared);
 		if (r)
 			break;
 	}

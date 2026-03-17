@@ -1414,10 +1414,10 @@ static void kvm_lapic_deliver_interrupt(struct kvm_vcpu *vcpu, struct kvm_lapic 
 	kvm_x86_call(deliver_interrupt)(apic, delivery_mode, trig_mode, vector);
 
 	/*
-	 * test_and_set_bit implies a memory barrier, so IRR is written before
+	 * atomic_fetch_or implies a memory barrier, so IRR is written before
 	 * reading irr_pending_planes below...
 	 */
-	if (!test_and_set_bit(vcpu->plane, &plane0_vcpu->arch.irr_pending_planes)) {
+	if (!(atomic_fetch_or(BIT(vcpu->plane), &plane0_vcpu->arch.irr_pending_planes) & BIT(vcpu->plane))) {
 		/*
 		 * ... and also running_plane and req_exit_planes are read after writing
 		 * irr_pending_planes.  Both barriers pair with kvm_arch_vcpu_ioctl_run().
@@ -1681,7 +1681,7 @@ static void kvm_icr_to_lapic_irq(struct kvm_lapic *apic, u32 icr_low,
 	irq->trig_mode = icr_low & APIC_INT_LEVELTRIG;
 	irq->shorthand = icr_low & APIC_SHORT_MASK;
 	irq->msi_redir_hint = false;
-	irq.plane = apic->vcpu->plane;
+	irq->plane = apic->vcpu->plane;
 	if (apic_x2apic_mode(apic))
 		irq->dest_id = icr_high;
 	else

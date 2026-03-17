@@ -122,7 +122,7 @@ void kvm_set_msi_irq(struct kvm *kvm, struct kvm_kernel_irq_routing_entry *e,
 	irq->shorthand = APIC_DEST_NOSHORT;
 	irq->plane = e->msi.plane;
 }
-EXPORT_SYMBOL_GPL(kvm_set_msi_irq);
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_set_msi_irq);
 
 static inline bool kvm_msi_route_invalid(struct kvm *kvm,
 		struct kvm_kernel_irq_routing_entry *e)
@@ -369,7 +369,7 @@ bool kvm_intr_is_single_vcpu(struct kvm *kvm, struct kvm_lapic_irq *irq,
 
 	return r == 1;
 }
-EXPORT_SYMBOL_GPL(kvm_intr_is_single_vcpu);
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_intr_is_single_vcpu);
 
 #define IOAPIC_ROUTING_ENTRY(irq) \
 	{ .gsi = irq, .type = KVM_IRQ_ROUTING_IRQCHIP,	\

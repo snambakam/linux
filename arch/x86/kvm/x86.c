@@ -10339,7 +10339,7 @@ static void kvm_apicv_init(struct kvm *kvm, unsigned long *apicv_inhibit_reasons
 
 	if (!enable_apicv)
 		reason = APICV_INHIBIT_REASON_DISABLED;
-	else if (!irqchip_kernel(kvm))
+	else if (!irqchip_in_kernel(kvm))
 		reason = APICV_INHIBIT_REASON_ABSENT;
 	else
 		return;
@@ -11955,28 +11955,6 @@ static void kvm_put_guest_fpu(struct kvm_vcpu *vcpu)
 	trace_kvm_fpu(0);
 }
 
-static int kvm_x86_vcpu_pre_run(struct kvm_vcpu *vcpu)
-{
-	/*
-	 * SIPI_RECEIVED is obsolete; KVM leaves the vCPU in Wait-For-SIPI and
-	 * tracks the pending SIPI separately.  SIPI_RECEIVED is still accepted
-	 * by KVM_SET_VCPU_EVENTS for backwards compatibility, but should be
-	 * converted to INIT_RECEIVED.
-	 */
-	if (WARN_ON_ONCE(vcpu->arch.mp_state == KVM_MP_STATE_SIPI_RECEIVED))
-		return -EINVAL;
-
-	/*
-	 * Disallow running the vCPU if userspace forced it into an impossible
-	 * MP_STATE, e.g. if the vCPU is in WFS but SIPI is blocked.
-	 */
-	if (vcpu->arch.mp_state == KVM_MP_STATE_INIT_RECEIVED &&
-	    !kvm_apic_init_sipi_allowed(vcpu))
-		return -EINVAL;
-
-	return kvm_x86_call(vcpu_pre_run)(vcpu);
-}
-
 static int kvm_x86_vcpu_pre_run_plane(struct kvm_vcpu *vcpu)
 {
 	/*
@@ -12101,7 +12079,7 @@ static int kvm_vcpu_ioctl_run_plane(struct kvm_vcpu *vcpu)
 		goto out;
 	}
 
-	r = kvm_x86_vcpu_pre_run(vcpu);
+	r = kvm_x86_vcpu_pre_run_plane(vcpu);
 	if (r <= 0)
 		goto out;
 
@@ -12161,7 +12139,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * the other side will certainly see the cleared bit irr_pending_planes
 		 * and set it, and vice versa.
 		 */
-		clear_bit(plane_id, &plane0_vcpu->arch.irr_pending_planes);
+		atomic_andnot(BIT(plane_id), &plane0_vcpu->arch.irr_pending_planes);
 		smp_mb__after_atomic();
 		if (kvm_lapic_find_highest_irr(vcpu))
 			atomic_or(BIT(plane_id), &plane0_vcpu->arch.irr_pending_planes);
@@ -13440,7 +13418,7 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 	kvm->arch.hv_root_tdp = INVALID_PAGE;
 #endif
 
-	kvm_apicv_init(kvm);
+	kvm_apicv_init(kvm, &kvm->arch.apicv_inhibit_reasons);
 	kvm_hv_init_vm(kvm);
 	kvm_xen_init_vm(kvm);
 
@@ -13559,11 +13537,6 @@ void kvm_arch_free_plane(struct kvm_plane *plane)
 	kvfree(rcu_dereference_check(plane->arch.apic_map, 1));
 }
 
-void kvm_arch_free_plane(struct kvm_plane *plane)
-{
-	kvfree(rcu_dereference_check(plane->arch.apic_map, 1));
-}
-
 void kvm_arch_destroy_vm(struct kvm *kvm)
 {
 	if (current->mm == kvm->mm) {
@@ -13588,7 +13561,6 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 	kvm_pic_destroy(kvm);
 	kvm_ioapic_destroy(kvm);
 #endif
-	kvfree(rcu_dereference_check(kvm->arch.apic_map, 1));
 	kfree(srcu_dereference_check(kvm->arch.pmu_event_filter, &kvm->srcu, 1));
 	kvm_mmu_uninit_vm(kvm);
 	kvm_page_track_cleanup(kvm);
