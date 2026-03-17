@@ -417,7 +417,7 @@ static noinstr void vmx_l1d_flush(struct kvm_vcpu *vcpu)
 		kvm_clear_cpu_l1tf_flush_l1d();
 	}
 
-	vcpu->stat.l1d_flush++;
+	vcpu->stat->l1d_flush++;
 
 	if (static_cpu_has(X86_FEATURE_FLUSH_L1D)) {
 		native_wrmsrq(MSR_IA32_FLUSH_CMD, L1D_FLUSH);
