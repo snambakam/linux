@@ -1717,6 +1717,7 @@ bool kvm_mmu_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range);
 
 long kvm_arch_dev_ioctl(struct file *filp,
 			unsigned int ioctl, unsigned long arg);
+bool kvm_arch_is_vcpu_plane_ioctl(unsigned ioctl);
 long kvm_arch_vcpu_ioctl(struct file *filp,
 			 unsigned int ioctl, unsigned long arg);
 long kvm_arch_vcpu_unlocked_ioctl(struct file *filp,
