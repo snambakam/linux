@@ -4308,7 +4308,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm_plane *plane, struct kvm_vcpu *pl
 	 * release semantics, which ensures the write is visible to kvm_get_vcpu().
 	 */
 	vcpu->plane = -1;
-	if (plane->plane)
+	if (!plane->plane)
 		vcpu->vcpu_idx = atomic_read(&kvm->online_vcpus);
 	else
 		vcpu->vcpu_idx = plane0_vcpu->vcpu_idx;
@@ -4333,7 +4333,7 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm_plane *plane, struct kvm_vcpu *pl
 	if (r < 0)
 		goto kvm_put_xa_erase;
 
-	if (!plane0_vcpu)
+	if (!plane->plane)
 		atomic_inc(&kvm->online_vcpus);
 
 	/*
