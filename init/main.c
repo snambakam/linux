@@ -40,6 +40,7 @@
 #include <linux/vmalloc.h>
 #include <linux/kernel_stat.h>
 #include <linux/start_kernel.h>
+#include <linux/vm_planes.h>
 #include <linux/security.h>
 #include <linux/smp.h>
 #include <linux/profile.h>
@@ -1038,6 +1039,9 @@ void start_kernel(void)
 	pr_notice("%s", linux_banner);
 	setup_arch(&command_line);
 	mm_core_init_early();
+#ifdef CONFIG_VM_PLANES
+	arch_init_vm_planes();
+#endif
 	/* Static keys and static calls are needed by LSMs */
 	jump_label_init();
 	static_call_init();
