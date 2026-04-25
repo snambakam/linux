@@ -288,7 +288,10 @@ static int __init parse_vm_planes_kconfig(const char *buf, size_t len,
 			p++;
 	}
 
-	for (i = 0; i < *plane_count; i++) {
+	/* Plane 0 is the already-running boot plane; only secondary planes
+	 * must provide full allocation metadata.
+	 */
+	for (i = 1; i < *plane_count; i++) {
 		if (state[i].load_offset == VM_PLANES_UNSET_VALUE ||
 		    state[i].memory_size == VM_PLANES_UNSET_VALUE ||
 		    !state[i].vcpu_count ||
