@@ -20,11 +20,13 @@
 #include <linux/kprobes.h>
 #include <linux/kgdb.h>
 #include <linux/mem_encrypt.h>
+#include <linux/kvm_para.h>
 #include <linux/smp.h>
 #include <linux/cpu.h>
 #include <linux/io.h>
 #include <linux/syscore_ops.h>
 #include <linux/pgtable.h>
+#include <linux/vm_planes.h>
 #include <linux/stackprotector.h>
 #include <linux/utsname.h>
 #include <linux/efi.h>
@@ -32,6 +34,7 @@
 #include <asm/alternative.h>
 #include <asm/cmdline.h>
 #include <asm/cpuid/api.h>
+#include <asm/kvm_para.h>
 #include <asm/perf_event.h>
 #include <asm/mmu_context.h>
 #include <asm/doublefault.h>
@@ -76,6 +79,11 @@
 #include <asm/runtime-const.h>
 
 #include "cpu.h"
+
+#ifdef CONFIG_VM_PLANES
+/* Private hypercall number for early VM plane configuration. */
+#define KVM_HC_VM_PLANES_CONFIG	0x1000
+#endif
 
 DEFINE_PER_CPU_READ_MOSTLY(struct cpuinfo_x86, cpu_info);
 EXPORT_PER_CPU_SYMBOL(cpu_info);
@@ -2664,3 +2672,33 @@ void __init arch_cpu_finalize_init(void)
 	 */
 	mem_encrypt_init();
 }
+
+#ifdef CONFIG_VM_PLANES
+void __init alloc_vm_planes(unsigned int plane_count,
+			    struct vm_plane_config *plane_cfg)
+{
+	phys_addr_t phys;
+	long ret;
+
+	if (!plane_count || !plane_cfg)
+		return;
+
+	if (!kvm_para_available()) {
+		pr_warn("vm_planes: hypercall interface unavailable\n");
+		return;
+	}
+
+	phys = virt_to_phys((void *)plane_cfg);
+
+	if (sizeof(unsigned long) < sizeof(phys_addr_t) && phys > ULONG_MAX) {
+		pr_warn("vm_planes: shared config address exceeds hypercall register width\n");
+		return;
+	}
+
+	ret = kvm_hypercall2(KVM_HC_VM_PLANES_CONFIG,
+			     (unsigned long)phys,
+			     plane_count);
+	if (ret < 0)
+		pr_warn("vm_planes: hypercall failed: %ld\n", ret);
+}
+#endif
