@@ -12,6 +12,7 @@
 struct vm_plane_config {
 	phys_addr_t load_offset;
 	phys_addr_t memory_size;
+	unsigned int vcpu_count;
 	char kernel[VM_PLANE_KERNEL_NAME_MAX];
 };
 
