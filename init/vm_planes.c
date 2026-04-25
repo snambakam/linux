@@ -18,9 +18,10 @@ static bool __initdata enable_vm_planes_requested;
 #define VM_PLANES_DEFAULT_COUNT		1
 
 struct vm_plane_parse_state {
-	phys_addr_t have_load_offset;
-	phys_addr_t have_memory_size;
-	char have_kernel[VM_PLANE_KERNEL_NAME_MAX];
+	phys_addr_t load_offset;
+	phys_addr_t memory_size;
+	unsigned int vcpu_count;
+	char kernel[VM_PLANE_KERNEL_NAME_MAX];
 };
 
 #define VM_PLANES_UNSET_VALUE	((phys_addr_t)~0)
@@ -203,8 +204,8 @@ static int __init parse_plane_cfg_line(const char *line, size_t len,
 			    sizeof(plane_cfg[plane_id].kernel)) < 0)
 			return -EINVAL;
 
-		strscpy(state[plane_id].have_kernel, val,
-			sizeof(state[plane_id].have_kernel));
+		strscpy(state[plane_id].kernel, val,
+			sizeof(state[plane_id].kernel));
 		return 0;
 	}
 
@@ -218,13 +219,21 @@ static int __init parse_plane_cfg_line(const char *line, size_t len,
 
 	if (!strcmp(key, "LOAD_OFFSET")) {
 		plane_cfg[plane_id].load_offset = parsed;
-		state[plane_id].have_load_offset = parsed;
+		state[plane_id].load_offset = parsed;
 		return 0;
 	}
 
 	if (!strcmp(key, "MEMORY_SIZE")) {
 		plane_cfg[plane_id].memory_size = parsed;
-		state[plane_id].have_memory_size = parsed;
+		state[plane_id].memory_size = parsed;
+		return 0;
+	}
+
+	if (!strcmp(key, "VCPU_COUNT")) {
+		if (parsed_u64 == 0 || parsed_u64 > UINT_MAX)
+			return -EINVAL;
+		plane_cfg[plane_id].vcpu_count = (unsigned int)parsed_u64;
+		state[plane_id].vcpu_count = (unsigned int)parsed_u64;
 		return 0;
 	}
 
@@ -259,9 +268,10 @@ static int __init parse_vm_planes_kconfig(const char *buf, size_t len,
 
 	memset(*plane_cfg, 0, *plane_count * sizeof(**plane_cfg));
 	for (i = 0; i < *plane_count; i++) {
-		state[i].have_load_offset = VM_PLANES_UNSET_VALUE;
-		state[i].have_memory_size = VM_PLANES_UNSET_VALUE;
-		state[i].have_kernel[0] = '\0';
+		state[i].load_offset = VM_PLANES_UNSET_VALUE;
+		state[i].memory_size = VM_PLANES_UNSET_VALUE;
+		state[i].vcpu_count = 0;
+		state[i].kernel[0] = '\0';
 	}
 
 	while (p < end) {
@@ -279,9 +289,10 @@ static int __init parse_vm_planes_kconfig(const char *buf, size_t len,
 	}
 
 	for (i = 0; i < *plane_count; i++) {
-		if (state[i].have_load_offset == VM_PLANES_UNSET_VALUE ||
-		    state[i].have_memory_size == VM_PLANES_UNSET_VALUE ||
-		    !state[i].have_kernel[0])
+		if (state[i].load_offset == VM_PLANES_UNSET_VALUE ||
+		    state[i].memory_size == VM_PLANES_UNSET_VALUE ||
+		    !state[i].vcpu_count ||
+		    !state[i].kernel[0])
 			return -EINVAL;
 	}
 
