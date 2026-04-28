@@ -11413,6 +11413,12 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 				goto out;
 			}
 		}
+
+		if (kvm_check_request(KVM_REQ_PLANE_RESCHED, vcpu)) {
+			vcpu->common->plane_switch = true;
+			r = 0;
+			goto out;
+		}
 	}
 
 	if (kvm_check_plane0_events(vcpu)) {
