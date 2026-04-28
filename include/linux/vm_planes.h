@@ -9,14 +9,23 @@
 
 #define VM_PLANE_KERNEL_NAME_MAX	128
 
+enum vm_plane_kernel_format {
+	VM_PLANE_KFMT_RAW = 0,
+	VM_PLANE_KFMT_BZIMAGE,
+	VM_PLANE_KFMT_ELF,
+};
+
 struct vm_plane_config {
 	phys_addr_t load_offset;
 	phys_addr_t memory_size;
 	unsigned int vcpu_count;
+	unsigned int kernel_format;
 	char kernel[VM_PLANE_KERNEL_NAME_MAX];
 };
 
 void __init arch_init_vm_planes(void);
+void __init load_vm_plane_kernels(unsigned int plane_count,
+				  struct vm_plane_config *plane_cfg);
 
 #endif /* CONFIG_VM_PLANES */
 

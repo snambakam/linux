@@ -8,8 +8,10 @@
 #include <linux/string.h>
 #include <linux/kvm_para.h>
 #include <linux/vm_planes.h>
+#include <linux/elf.h>
 #include <asm/cpu.h>
 #include <asm/kvm_para.h>
+#include <asm/io.h>
 
 #ifdef CONFIG_VM_PLANES
 static bool __initdata enable_vm_planes_requested;
@@ -21,6 +23,7 @@ struct vm_plane_parse_state {
 	phys_addr_t load_offset;
 	phys_addr_t memory_size;
 	unsigned int vcpu_count;
+	unsigned int kernel_format;
 	char kernel[VM_PLANE_KERNEL_NAME_MAX];
 };
 
@@ -206,6 +209,23 @@ static int __init parse_plane_cfg_line(const char *line, size_t len,
 
 		strscpy(state[plane_id].kernel, val,
 			sizeof(state[plane_id].kernel));
+		return 0;
+	}
+
+	if (!strcmp(key, "KERNEL_FORMAT")) {
+		unsigned int fmt;
+
+		if (!strcasecmp(val, "raw"))
+			fmt = VM_PLANE_KFMT_RAW;
+		else if (!strcasecmp(val, "bzimage"))
+			fmt = VM_PLANE_KFMT_BZIMAGE;
+		else if (!strcasecmp(val, "elf"))
+			fmt = VM_PLANE_KFMT_ELF;
+		else
+			return -EINVAL;
+
+		plane_cfg[plane_id].kernel_format = fmt;
+		state[plane_id].kernel_format = fmt;
 		return 0;
 	}
 
