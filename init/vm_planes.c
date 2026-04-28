@@ -11,7 +11,7 @@
 #include <linux/elf.h>
 #include <asm/cpu.h>
 #include <asm/kvm_para.h>
-#include <asm/io.h>
+#include <asm-generic/early_ioremap.h>
 
 #ifdef CONFIG_VM_PLANES
 static bool __initdata enable_vm_planes_requested;
@@ -405,6 +405,159 @@ static int __init vm_planes_get_cfg_from_initrd(unsigned int *plane_count,
 	return -ENOENT;
 }
 
+static int __init find_initrd_file(const char *filename,
+				   const u8 **out_data, u32 *out_size)
+{
+	const u8 *p = (const u8 *)(unsigned long)initrd_start;
+	const u8 *end = (const u8 *)(unsigned long)initrd_end;
+
+	if (!initrd_start || !initrd_end || initrd_end <= initrd_start)
+		return -ENOENT;
+
+	while (p + sizeof(struct cpio_newc_header) <= end) {
+		const struct cpio_newc_header *hdr;
+		const char *name;
+		const u8 *data;
+		u32 namesize, filesize;
+		u32 name_align, data_align;
+		int ret;
+
+		hdr = (const struct cpio_newc_header *)p;
+		if (memcmp(hdr->c_magic, "070701", 6) &&
+		    memcmp(hdr->c_magic, "070702", 6))
+			return -EINVAL;
+
+		ret = parse_hex_field(hdr->c_namesize,
+				      sizeof(hdr->c_namesize), &namesize);
+		if (ret)
+			return ret;
+
+		ret = parse_hex_field(hdr->c_filesize,
+				      sizeof(hdr->c_filesize), &filesize);
+		if (ret)
+			return ret;
+
+		if (!namesize)
+			return -EINVAL;
+
+		p += sizeof(*hdr);
+		if (p + namesize > end)
+			return -EINVAL;
+
+		name = (const char *)p;
+		name_align = ALIGN(namesize, 4);
+		if (p + name_align > end)
+			return -EINVAL;
+
+		data = p + name_align;
+		if (data + filesize > end)
+			return -EINVAL;
+
+		if (!strcmp(name, "TRAILER!!!"))
+			break;
+
+		if (cpio_name_match(name, namesize, filename)) {
+			*out_data = data;
+			*out_size = filesize;
+			return 0;
+		}
+
+		data_align = ALIGN(filesize, 4);
+		if (data + data_align < data || data + data_align > end)
+			return -EINVAL;
+
+		p = data + data_align;
+	}
+
+	return -ENOENT;
+}
+
+static int __init copy_to_early_mem(phys_addr_t dest, const void *src,
+				    unsigned long size)
+{
+	unsigned long slop, clen;
+	char *p;
+
+	while (size) {
+		slop = offset_in_page(dest);
+		clen = size;
+		if (clen > PAGE_SIZE - slop)
+			clen = PAGE_SIZE - slop;
+		p = early_memremap(dest & PAGE_MASK, clen + slop);
+		if (!p)
+			return -ENOMEM;
+		memcpy(p + slop, src, clen);
+		early_memunmap(p, clen + slop);
+		dest += clen;
+		src += clen;
+		size -= clen;
+	}
+	return 0;
+}
+
+static int __init load_plane_kernel_raw(const u8 *data, u32 size,
+					struct vm_plane_config *cfg)
+{
+	if (size > cfg->memory_size) {
+		pr_err("vm_planes: raw kernel image (%u bytes) exceeds plane memory (%llu bytes)\n",
+		       size, (unsigned long long)cfg->memory_size);
+		return -ENOMEM;
+	}
+
+	return copy_to_early_mem(cfg->load_offset, data, size);
+}
+
+int __init load_vm_plane_kernels(unsigned int plane_count,
+				 struct vm_plane_config *plane_cfg)
+{
+	unsigned int i;
+	int err = 0;
+
+	for (i = 1; i < plane_count; i++) {
+		const u8 *data;
+		u32 size;
+		int ret;
+
+		ret = find_initrd_file(plane_cfg[i].kernel, &data, &size);
+		if (ret) {
+			pr_err("vm_planes: plane %u: kernel image '%s' not found in initrd\n",
+			       i, plane_cfg[i].kernel);
+			err = ret;
+			continue;
+		}
+
+		switch (plane_cfg[i].kernel_format) {
+		case VM_PLANE_KFMT_RAW:
+			ret = load_plane_kernel_raw(data, size,
+						    &plane_cfg[i]);
+			break;
+		case VM_PLANE_KFMT_BZIMAGE:
+		case VM_PLANE_KFMT_ELF:
+			pr_err("vm_planes: plane %u: kernel format not yet supported\n",
+			       i);
+			err = -ENOSYS;
+			continue;
+		default:
+			pr_err("vm_planes: plane %u: unknown kernel format %u\n",
+			       i, plane_cfg[i].kernel_format);
+			err = -EINVAL;
+			continue;
+		}
+
+		if (ret) {
+			pr_err("vm_planes: plane %u: failed to load kernel image: %d\n",
+			       i, ret);
+			err = ret;
+		} else {
+			pr_info("vm_planes: plane %u: loaded '%s' (%u bytes) at 0x%llx\n",
+				i, plane_cfg[i].kernel,
+				size, (unsigned long long)plane_cfg[i].load_offset);
+		}
+	}
+
+	return err;
+}
+
 static int __init parse_enable_vm_planes(char *str)
 {
 	bool enable;
@@ -423,13 +576,16 @@ static int __init parse_enable_vm_planes(char *str)
 
 early_param("enable-vm-planes", parse_enable_vm_planes);
 
-void __init __weak alloc_vm_planes(unsigned int plane_count,
-				   struct vm_plane_config *plane_cfg) { }
+int __init __weak alloc_vm_planes(unsigned int plane_count,
+				   struct vm_plane_config *plane_cfg) { return -ENOSYS; }
+
+int __init __weak activate_vm_planes(unsigned int plane_count) { return -ENOSYS; }
 
 void __init arch_init_vm_planes(void)
 {
 	unsigned int plane_count = VM_PLANES_DEFAULT_COUNT;
 	struct vm_plane_config *plane_cfg;
+	int ret;
 
 	if (!enable_vm_planes_requested)
 		return;
@@ -445,7 +601,22 @@ void __init arch_init_vm_planes(void)
 
 	pr_info("vm_planes: enabling %u planes (ids 0..%u)\n",
 		plane_count, plane_count - 1);
-	alloc_vm_planes(plane_count, plane_cfg);
+
+	ret = alloc_vm_planes(plane_count, plane_cfg);
+	if (ret) {
+		pr_err("vm_planes: failed to allocate planes: %d\n", ret);
+		return;
+	}
+
+	ret = load_vm_plane_kernels(plane_count, plane_cfg);
+	if (ret) {
+		pr_err("vm_planes: failed to load plane kernels: %d\n", ret);
+		return;
+	}
+
+	ret = activate_vm_planes(plane_count);
+	if (ret)
+		pr_err("vm_planes: failed to activate planes: %d\n", ret);
 }
 
 #endif /* CONFIG_VM_PLANES */
