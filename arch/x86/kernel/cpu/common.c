@@ -82,7 +82,9 @@
 
 #ifdef CONFIG_VM_PLANES
 /* Private hypercall number for early VM plane configuration. */
-#define KVM_HC_VM_PLANES_CONFIG	0x1000
+#define KVM_HC_VM_PLANES_CONFIG		0x1000
+/* Private hypercall number to activate all configured planes. */
+#define KVM_HC_VM_PLANES_ACTIVATE	0x1001
 #endif
 
 DEFINE_PER_CPU_READ_MOSTLY(struct cpuinfo_x86, cpu_info);
@@ -2674,31 +2676,56 @@ void __init arch_cpu_finalize_init(void)
 }
 
 #ifdef CONFIG_VM_PLANES
-void __init alloc_vm_planes(unsigned int plane_count,
+int __init alloc_vm_planes(unsigned int plane_count,
 			    struct vm_plane_config *plane_cfg)
 {
 	phys_addr_t phys;
 	long ret;
 
 	if (!plane_count || !plane_cfg)
-		return;
+		return -EINVAL;
 
 	if (!kvm_para_available()) {
 		pr_warn("vm_planes: hypercall interface unavailable\n");
-		return;
+		return -ENODEV;
 	}
 
 	phys = virt_to_phys((void *)plane_cfg);
 
 	if (sizeof(unsigned long) < sizeof(phys_addr_t) && phys > ULONG_MAX) {
 		pr_warn("vm_planes: shared config address exceeds hypercall register width\n");
-		return;
+		return -EOVERFLOW;
 	}
 
 	ret = kvm_hypercall2(KVM_HC_VM_PLANES_CONFIG,
 			     (unsigned long)phys,
 			     plane_count);
-	if (ret < 0)
+	if (ret < 0) {
 		pr_warn("vm_planes: hypercall failed: %ld\n", ret);
+		return (int)ret;
+	}
+
+	return 0;
+}
+
+int __init activate_vm_planes(unsigned int plane_count)
+{
+	long ret;
+
+	if (!plane_count)
+		return -EINVAL;
+
+	if (!kvm_para_available()) {
+		pr_warn("vm_planes: hypercall interface unavailable\n");
+		return -ENODEV;
+	}
+
+	ret = kvm_hypercall1(KVM_HC_VM_PLANES_ACTIVATE, plane_count);
+	if (ret < 0) {
+		pr_warn("vm_planes: activate hypercall failed: %ld\n", ret);
+		return (int)ret;
+	}
+
+	return 0;
 }
 #endif

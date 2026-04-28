@@ -24,8 +24,8 @@ struct vm_plane_config {
 };
 
 void __init arch_init_vm_planes(void);
-void __init load_vm_plane_kernels(unsigned int plane_count,
-				  struct vm_plane_config *plane_cfg);
+int __init load_vm_plane_kernels(unsigned int plane_count,
+				 struct vm_plane_config *plane_cfg);
 
 #endif /* CONFIG_VM_PLANES */
 
