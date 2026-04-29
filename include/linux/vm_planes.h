@@ -8,6 +8,7 @@
 #ifdef CONFIG_VM_PLANES
 
 #define VM_PLANE_KERNEL_NAME_MAX	128
+#define VM_PLANE_CMDLINE_MAX		512
 
 enum vm_plane_kernel_format {
 	VM_PLANE_KFMT_RAW = 0,
@@ -21,6 +22,7 @@ struct vm_plane_config {
 	unsigned int vcpu_count;
 	unsigned int kernel_format;
 	char kernel[VM_PLANE_KERNEL_NAME_MAX];
+	char cmdline[VM_PLANE_CMDLINE_MAX];
 };
 
 void __init arch_init_vm_planes(void);

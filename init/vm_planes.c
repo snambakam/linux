@@ -25,6 +25,7 @@ struct vm_plane_parse_state {
 	unsigned int vcpu_count;
 	unsigned int kernel_format;
 	char kernel[VM_PLANE_KERNEL_NAME_MAX];
+	char cmdline[VM_PLANE_CMDLINE_MAX];
 };
 
 #define VM_PLANES_UNSET_VALUE	((phys_addr_t)~0)
@@ -141,7 +142,7 @@ static int __init parse_plane_cfg_line(const char *line, size_t len,
 				       struct vm_plane_config *plane_cfg,
 				       struct vm_plane_parse_state *state)
 {
-	char tmp[192];
+	char tmp[VM_PLANE_CMDLINE_MAX + 64];
 	char *p, *key, *val;
 	unsigned int plane_id;
 	u64 parsed_u64;
@@ -229,6 +230,25 @@ static int __init parse_plane_cfg_line(const char *line, size_t len,
 		return 0;
 	}
 
+	if (!strcmp(key, "CMDLINE")) {
+		size_t val_len = strlen(val);
+
+		if (val_len >= 2 && val[0] == '"') {
+			if (val[val_len - 1] != '"')
+				return -EINVAL;
+			val[val_len - 1] = '\0';
+			val++;
+		}
+
+		if (strscpy(plane_cfg[plane_id].cmdline, val,
+			    sizeof(plane_cfg[plane_id].cmdline)) < 0)
+			return -E2BIG;
+
+		strscpy(state[plane_id].cmdline, val,
+			sizeof(state[plane_id].cmdline));
+		return 0;
+	}
+
 	if (kstrtou64(val, 0, &parsed_u64))
 		return -EINVAL;
 
@@ -292,6 +312,7 @@ static int __init parse_vm_planes_kconfig(const char *buf, size_t len,
 		state[i].memory_size = VM_PLANES_UNSET_VALUE;
 		state[i].vcpu_count = 0;
 		state[i].kernel[0] = '\0';
+		state[i].cmdline[0] = '\0';
 	}
 
 	while (p < end) {
