@@ -994,9 +994,6 @@ void start_kernel(void)
 	pr_notice("%s", linux_banner);
 	setup_arch(&command_line);
 	mm_core_init_early();
-#ifdef CONFIG_VM_PLANES
-	arch_init_vm_planes();
-#endif
 	/* Static keys and static calls are needed by LSMs */
 	jump_label_init();
 	static_call_init();
@@ -1665,6 +1662,10 @@ static noinline void __init kernel_init_freeable(void)
 
 	wait_for_initramfs();
 	console_on_rootfs();
+
+#ifdef CONFIG_VM_PLANES
+	arch_init_vm_planes();
+#endif
 
 	/*
 	 * check if there is an early userspace init.  If yes, let it do all

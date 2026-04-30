@@ -15,7 +15,8 @@ struct vm_plane_config;
 
 int __init alloc_vm_planes(unsigned int plane_count,
 			    struct vm_plane_config *plane_cfg);
-int __init activate_vm_planes(unsigned int plane_count);
+int __init activate_vm_planes(unsigned int plane_count,
+			       struct vm_plane_config *plane_cfg);
 #endif
 
 #ifndef CONFIG_SMP

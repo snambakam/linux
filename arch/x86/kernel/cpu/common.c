@@ -80,13 +80,6 @@
 
 #include "cpu.h"
 
-#ifdef CONFIG_VM_PLANES
-/* Private hypercall number for early VM plane configuration. */
-#define KVM_HC_VM_PLANES_CONFIG		0x1000
-/* Private hypercall number to activate all configured planes. */
-#define KVM_HC_VM_PLANES_ACTIVATE	0x1001
-#endif
-
 DEFINE_PER_CPU_READ_MOSTLY(struct cpuinfo_x86, cpu_info);
 EXPORT_PER_CPU_SYMBOL(cpu_info);
 
@@ -2708,11 +2701,13 @@ int __init alloc_vm_planes(unsigned int plane_count,
 	return 0;
 }
 
-int __init activate_vm_planes(unsigned int plane_count)
+int __init activate_vm_planes(unsigned int plane_count,
+			       struct vm_plane_config *plane_cfg)
 {
+	phys_addr_t phys;
 	long ret;
 
-	if (!plane_count)
+	if (!plane_count || !plane_cfg)
 		return -EINVAL;
 
 	if (!kvm_para_available()) {
@@ -2720,7 +2715,11 @@ int __init activate_vm_planes(unsigned int plane_count)
 		return -ENODEV;
 	}
 
-	ret = kvm_hypercall1(KVM_HC_VM_PLANES_ACTIVATE, plane_count);
+	phys = virt_to_phys((void *)plane_cfg);
+
+	ret = kvm_hypercall2(KVM_HC_VM_PLANES_ACTIVATE,
+			     (unsigned long)phys,
+			     plane_count);
 	if (ret < 0) {
 		pr_warn("vm_planes: activate hypercall failed: %ld\n", ret);
 		return (int)ret;
