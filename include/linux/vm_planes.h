@@ -19,6 +19,7 @@ enum vm_plane_kernel_format {
 struct vm_plane_config {
 	phys_addr_t load_offset;
 	phys_addr_t memory_size;
+	phys_addr_t entry_point;
 	unsigned int vcpu_count;
 	unsigned int kernel_format;
 	char kernel[VM_PLANE_KERNEL_NAME_MAX];
