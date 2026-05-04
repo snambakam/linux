@@ -517,17 +517,29 @@ void kvm_free_plane(struct kvm_plane *plane)
 	kvm_x86_call(free_plane)(plane);
 }
 
-struct kvm_plane *kvm_alloc_plane(void)
+struct kvm_plane *x86_alloc_plane(void)
 {
 	/* For better type checking, do not return kzalloc() value directly */
 	struct kvm_plane *plane = kzalloc(sizeof(*plane), GFP_KERNEL_ACCOUNT);
 
 	return plane;
 }
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(x86_alloc_plane);
+
+void x86_free_plane(struct kvm_plane *plane)
+{
+	kfree(plane);
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(x86_free_plane);
+
+struct kvm_plane *kvm_alloc_plane(void)
+{
+	return kvm_x86_call(alloc_plane)();
+}
 
 void kvm_free_plane(struct kvm_plane *plane)
 {
-	kfree(plane);
+	kvm_x86_call(free_plane)(plane);
 }
 
 /*
