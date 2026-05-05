@@ -11425,12 +11425,19 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 				goto out;
 			}
 		}
+	}
 
-		if (kvm_check_request(KVM_REQ_PLANE_RESCHED, vcpu)) {
-			vcpu->common->plane_switch = true;
-			r = 0;
-			goto out;
-		}
+	if (kvm_check_plane0_events(vcpu)) {
+		kvm_vcpu_set_plane_runnable(vcpu->common->vcpus[0]);
+
+		kvm_make_request(KVM_REQ_EVENT, vcpu);
+		kvm_make_request(KVM_REQ_PLANE_RESCHED, vcpu);
+	}
+
+	if (kvm_check_request(KVM_REQ_PLANE_RESCHED, vcpu)) {
+		vcpu->common->plane_switch = true;
+		r = 0;
+		goto out;
 	}
 
 	if (kvm_check_plane0_events(vcpu)) {
