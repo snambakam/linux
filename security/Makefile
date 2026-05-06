@@ -27,5 +27,8 @@ obj-$(CONFIG_BPF_LSM)			+= bpf/
 obj-$(CONFIG_SECURITY_LANDLOCK)		+= landlock/
 obj-$(CONFIG_SECURITY_IPE)		+= ipe/
 
+# Virtualization-Based Security
+obj-$(CONFIG_VBS)			+= vbs/
+
 # Object integrity file lists
 obj-$(CONFIG_INTEGRITY)			+= integrity/
