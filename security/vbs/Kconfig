@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VBS
+	bool "Virtualization-Based Security (VBS) support"
+	depends on (X86_64 || ARM64) && VM_PLANES
+	help
+	  Enable a transport-agnostic interface between the guest OS
+	  (plane-0 / VTL0 / VMPL2+) and the secure kernel (plane-1 /
+	  VTL1 / VMPL0 / service TD / RMM).
+
+	  The core VBS layer dispatches calls from kernel subsystems
+	  (memory protection, module authentication, key management)
+	  to a platform-specific backend such as KVM software planes,
+	  AMD SEV-SNP SVSM, Intel TDX, Hyper-V VSM, or Arm CCA.
+
+	  If unsure, say N.
+
+config VBS_KVM_PLANES
+	bool "VBS backend: KVM software planes"
+	depends on VBS && KVM_GUEST
+	help
+	  VBS backend that uses KVM paravirt hypercalls to communicate
+	  between plane-0 (normal guest) and plane-1 (secure kernel
+	  running in a separate KVM VM plane managed by QEMU).
+
+	  Select this if you are running under KVM with VM planes
+	  support enabled.
+
+config VBS_SEV_SNP
+	bool "VBS backend: AMD SEV-SNP"
+	depends on VBS && AMD_MEM_ENCRYPT
+	help
+	  VBS backend that uses the SVSM (Secure VM Service Module)
+	  protocol to communicate with the SVSM running at VMPL0
+	  on AMD SEV-SNP platforms.
+
+	  Select this if you are running as an SEV-SNP guest with
+	  an SVSM providing security services at VMPL0.
+
+config VBS_TDX
+	bool "VBS backend: Intel TDX service TD"
+	depends on VBS && INTEL_TDX_GUEST
+	help
+	  VBS backend that uses TDG.VP.VMCALL (TDVMCALL) to communicate
+	  with a service TD providing security services on Intel TDX
+	  platforms.
+
+	  Note: Service TD support is still evolving in the TDX
+	  architecture.  Select this for development/testing only.
+
+config VBS_HV_VSM
+	bool "VBS backend: Hyper-V VSM"
+	depends on VBS && HYPERV
+	help
+	  VBS backend that uses native Hyper-V hypercalls to communicate
+	  between VTL0 (normal kernel) and VTL1 (secure kernel).
+
+	  Select this if you are running as a Hyper-V guest with
+	  Virtual Secure Mode (VSM) enabled.
+
+config VBS_ARM_CCA
+	bool "VBS backend: Arm CCA (Confidential Compute Architecture)"
+	depends on VBS && ARM64
+	help
+	  VBS backend that uses the RSI (Realm Services Interface) to
+	  communicate between a Realm guest and the RMM (Realm Management
+	  Monitor) or a security service on Arm CCA platforms.
+
+	  Select this if you are running as a Realm guest under Arm CCA/RME.
