@@ -22,14 +22,8 @@
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/io.h>
+#include <linux/kvm_para.h>
 #include <asm/kvm_para.h>
-
-/* ── hypercall numbers for VBS VTL calls (plane-0 → plane-1) ──────────── */
-/*
- * These extend the existing KVM_HC_* numbering.  The host (KVM + QEMU)
- * intercepts them and routes them to the secure-kernel plane.
- */
-#define KVM_HC_VBS_VTL_CALL		15
 
 /* ── shared-memory calling area (modelled after the SVSM CAA) ─────── */
 
