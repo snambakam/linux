@@ -2474,10 +2474,17 @@ static int kvm_vm_ioctl_clear_dirty_log(struct kvm *kvm,
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
 static u64 kvm_supported_mem_attributes(struct kvm_plane *plane)
 {
-	if (!plane || (!plane->plane && kvm_arch_has_private_mem(plane->kvm)))
-		return KVM_MEMORY_ATTRIBUTE_PRIVATE;
+	u64 attrs = 0;
 
-	return 0;
+	if (!plane || (!plane->plane && kvm_arch_has_private_mem(plane->kvm)))
+		attrs |= KVM_MEMORY_ATTRIBUTE_PRIVATE;
+
+#ifdef CONFIG_KVM_MAX_NR_VCPU_PLANES
+	/* All planes support NO_WRITE / NO_EXEC for cross-plane protection. */
+	attrs |= KVM_MEMORY_ATTRIBUTE_NO_WRITE | KVM_MEMORY_ATTRIBUTE_NO_EXEC;
+#endif
+
+	return attrs;
 }
 
 /*
@@ -5568,6 +5575,37 @@ static long kvm_vm_ioctl(struct file *filp,
 	case KVM_SET_MEMORY_ATTRIBUTES:
 #endif /* CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES */
 		return __kvm_plane_ioctl(kvm->planes[0], ioctl, arg);
+#if defined(CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES) && defined(CONFIG_KVM_MAX_NR_VCPU_PLANES)
+	case KVM_SET_PLANE_MEMORY_ATTRIBUTES: {
+		struct kvm_plane_memory_attributes pattrs;
+		struct kvm_memory_attributes attrs;
+		struct kvm_plane *target;
+
+		r = -EFAULT;
+		if (copy_from_user(&pattrs, argp, sizeof(pattrs)))
+			goto out;
+
+		r = -EINVAL;
+		if (pattrs.flags)
+			goto out;
+		if (pattrs.plane >= KVM_MAX_VCPU_PLANES)
+			goto out;
+
+		target = kvm->planes[pattrs.plane];
+		r = -ENOENT;
+		if (!target)
+			goto out;
+
+		/* Translate to the standard attributes struct */
+		attrs.address    = pattrs.address;
+		attrs.size       = pattrs.size;
+		attrs.attributes = pattrs.attributes;
+		attrs.flags      = 0;
+
+		r = kvm_vm_ioctl_set_mem_attributes(target, &attrs);
+		break;
+	}
+#endif /* CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES && CONFIG_KVM_MAX_NR_VCPU_PLANES */
 #ifdef __KVM_HAVE_IRQ_LINE
 	case KVM_IRQ_LINE_STATUS:
 	case KVM_IRQ_LINE: {
