@@ -121,7 +121,8 @@ static u64 __read_mostly efer_reserved_bits = ~((u64)EFER_SCE);
 
 #define KVM_EXIT_HYPERCALL_VALID_MASK (BIT(KVM_HC_MAP_GPA_RANGE) | \
 					 BIT(KVM_HC_VM_PLANES_CONFIG) | \
-					 BIT(KVM_HC_VM_PLANES_ACTIVATE))
+					 BIT(KVM_HC_VM_PLANES_ACTIVATE) | \
+					 BIT(KVM_HC_VBS_VTL_CALL))
 
 #define KVM_CAP_PMU_VALID_MASK KVM_PMU_CAP_DISABLE
 
@@ -10533,7 +10534,8 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 		return 0;
 	}
 	case KVM_HC_VM_PLANES_CONFIG:
-	case KVM_HC_VM_PLANES_ACTIVATE: {
+	case KVM_HC_VM_PLANES_ACTIVATE:
+	case KVM_HC_VBS_VTL_CALL: {
 		ret = -KVM_ENOSYS;
 		if (!user_exit_on_hypercall(vcpu->kvm, nr))
 			break;
