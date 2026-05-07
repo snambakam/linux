@@ -31,26 +31,30 @@
  */
 #define KVM_HC_VBS_VTL_CALL		15
 
-/* ── shared-memory request / response layout ──────────────────────────── */
-
-struct vbs_kvm_request {
-	__u32	call_id;	/* enum vbs_call_id			*/
-	__u32	arg_size;	/* bytes of payload following this hdr	*/
-	__u8	payload[];	/* variable-length argument data		*/
-} __packed;
-
-struct vbs_kvm_response {
-	__s32	status;		/* 0 = success, negative errno		*/
-	__u32	resp_size;	/* bytes of payload following this hdr	*/
-	__u8	payload[];	/* variable-length response data		*/
-} __packed;
+/* ── shared-memory calling area (modelled after the SVSM CAA) ─────── */
 
 /*
- * A single page is used for each direction.  That gives ~4 KiB of
- * payload per call, which is enough for all current VBS operations.
+ * Single shared page used for both request and response data.
+ * The protocol is synchronous: plane-0 writes the request, issues a
+ * hypercall, blocks until QEMU returns, then reads the response from
+ * the same page.  No concurrent access is possible.
+ *
+ * Layout (within one 4 KiB page):
+ *   [ call_pending | call_id | status | arg_size | resp_size | buffer ]
  */
-static void *kvm_req_page;	/* request  (plane-0 writes, plane-1 reads)  */
-static void *kvm_resp_page;	/* response (plane-1 writes, plane-0 reads)  */
+struct vbs_kvm_ca {
+	__u8	call_pending;	/* 1 while call is in flight		*/
+	__u8	rsvd[3];
+	__u32	call_id;	/* enum vbs_call_id (set by caller)	*/
+	__s32	status;		/* return code (set by responder)	*/
+	__u32	arg_size;	/* request payload size			*/
+	__u32	resp_size;	/* response payload size			*/
+	__u8	buffer[];	/* request data in, response data out	*/
+} __packed;
+
+#define VBS_CA_BUF_SIZE	(PAGE_SIZE - sizeof(struct vbs_kvm_ca))
+
+static void *kvm_ca_page;	/* single calling-area page		*/
 
 /* ── low-level VTL call ───────────────────────────────────────────────── */
 
@@ -58,41 +62,44 @@ static int kvm_planes_vtl_call(enum vbs_call_id id,
 			       const void *arg, size_t arg_size,
 			       void *resp, size_t resp_size)
 {
-	struct vbs_kvm_request *req;
-	struct vbs_kvm_response *rsp;
+	struct vbs_kvm_ca *ca;
 	long hc_ret;
 
-	if (!kvm_req_page || !kvm_resp_page)
+	if (!kvm_ca_page)
 		return -ENOMEM;
 
-	if (arg_size > PAGE_SIZE - sizeof(*req))
+	if (arg_size > VBS_CA_BUF_SIZE)
 		return -E2BIG;
 
-	/* Build request in the shared page */
-	req = kvm_req_page;
-	req->call_id  = id;
-	req->arg_size = arg_size;
-	if (arg_size && arg)
-		memcpy(req->payload, arg, arg_size);
+	ca = kvm_ca_page;
 
-	/* Issue hypercall: pass physical addresses of req & resp pages */
-	hc_ret = kvm_hypercall2(KVM_HC_VBS_VTL_CALL,
-				virt_to_phys(kvm_req_page),
-				virt_to_phys(kvm_resp_page));
+	/* Build request */
+	ca->call_id  = id;
+	ca->arg_size = arg_size;
+	ca->status   = 0;
+	ca->resp_size = 0;
+	if (arg_size && arg)
+		memcpy(ca->buffer, arg, arg_size);
+	ca->call_pending = 1;
+
+	/* Issue hypercall: pass physical address of the calling area */
+	hc_ret = kvm_hypercall1(KVM_HC_VBS_VTL_CALL,
+				virt_to_phys(kvm_ca_page));
+	ca->call_pending = 0;
+
 	if (hc_ret) {
 		pr_err_ratelimited("vbs-kvm: hypercall failed (%ld)\n", hc_ret);
 		return -EIO;
 	}
 
-	/* Read response */
-	rsp = kvm_resp_page;
-	if (rsp->status)
-		return rsp->status;
+	if (ca->status)
+		return ca->status;
 
-	if (resp && resp_size) {
-		size_t copy = min_t(size_t, resp_size, rsp->resp_size);
+	/* Read response from the same buffer */
+	if (resp && resp_size && ca->resp_size) {
+		size_t copy = min_t(size_t, resp_size, ca->resp_size);
 
-		memcpy(resp, rsp->payload, copy);
+		memcpy(resp, ca->buffer, copy);
 	}
 	return 0;
 }
@@ -192,34 +199,27 @@ static int kvm_planes_init(void)
 {
 	int ret;
 
-	kvm_req_page  = (void *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
-	kvm_resp_page = (void *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
-	if (!kvm_req_page || !kvm_resp_page) {
-		ret = -ENOMEM;
-		goto fail;
-	}
+	kvm_ca_page = (void *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
+	if (!kvm_ca_page)
+		return -ENOMEM;
 
 	ret = kvm_planes_vtl_call(VBS_CALL_INIT, NULL, 0, NULL, 0);
 	if (ret) {
 		pr_err("vbs-kvm: plane-1 INIT call failed (%d)\n", ret);
-		goto fail;
+		free_page((unsigned long)kvm_ca_page);
+		kvm_ca_page = NULL;
+		return ret;
 	}
 
 	pr_info("vbs-kvm: connected to plane-1 secure kernel\n");
 	return 0;
-fail:
-	free_page((unsigned long)kvm_req_page);
-	free_page((unsigned long)kvm_resp_page);
-	kvm_req_page = kvm_resp_page = NULL;
-	return ret;
 }
 
 static void kvm_planes_shutdown(void)
 {
 	kvm_planes_vtl_call(VBS_CALL_SHUTDOWN, NULL, 0, NULL, 0);
-	free_page((unsigned long)kvm_req_page);
-	free_page((unsigned long)kvm_resp_page);
-	kvm_req_page = kvm_resp_page = NULL;
+	free_page((unsigned long)kvm_ca_page);
+	kvm_ca_page = NULL;
 }
 
 /* ── ops table & registration ─────────────────────────────────────────── */
