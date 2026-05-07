@@ -3107,7 +3107,9 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 		return RET_PF_EMULATE;
 	}
 
-	wrprot = make_spte(vcpu, sp, slot, pte_access, gfn, pfn, *sptep, prefetch,
+	wrprot = make_spte(vcpu, sp, slot,
+			   kvm_plane_filter_pte_access(vcpu, gfn, pte_access),
+			   gfn, pfn, *sptep, prefetch,
 			   false, host_writable, &spte);
 
 	if (*sptep == spte) {

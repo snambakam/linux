@@ -1140,7 +1140,9 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu,
 	if (unlikely(!fault->slot))
 		new_spte = make_mmio_spte(vcpu, iter->gfn, sp->role.access);
 	else
-		wrprot = make_spte(vcpu, sp, fault->slot, sp->role.access, iter->gfn,
+		wrprot = make_spte(vcpu, sp, fault->slot,
+				   kvm_plane_filter_pte_access(vcpu, iter->gfn, sp->role.access),
+				   iter->gfn,
 				   fault->pfn, iter->old_spte, fault->prefetch,
 				   false, fault->map_writable, &new_spte);
 

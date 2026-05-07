@@ -1687,6 +1687,29 @@ struct kvm_memory_attributes {
 
 #define KVM_MEMORY_ATTRIBUTE_PRIVATE           (1ULL << 3)
 
+/*
+ * Per-plane memory protection attributes (VM planes / VBS).
+ * These control EPT R/W/X permissions enforced by the hypervisor on
+ * behalf of a higher-privilege plane (e.g., plane-1 restricting plane-0).
+ */
+#define KVM_MEMORY_ATTRIBUTE_NO_WRITE          (1ULL << 4)
+#define KVM_MEMORY_ATTRIBUTE_NO_EXEC           (1ULL << 5)
+
+/*
+ * Set memory attributes on a specific plane's address space.
+ * Used by a higher-privilege plane to restrict a lower-privilege plane's
+ * EPT permissions (e.g., plane-1 making plane-0 kernel text read-only).
+ */
+struct kvm_plane_memory_attributes {
+	__u32 plane;        /* target plane index                        */
+	__u32 flags;        /* must be 0                                 */
+	__u64 address;      /* GPA (page-aligned)                        */
+	__u64 size;         /* size in bytes (page-aligned)              */
+	__u64 attributes;   /* KVM_MEMORY_ATTRIBUTE_NO_WRITE / NO_EXEC   */
+};
+
+#define KVM_SET_PLANE_MEMORY_ATTRIBUTES	_IOW(KVMIO, 0xd6, struct kvm_plane_memory_attributes)
+
 #define KVM_CREATE_GUEST_MEMFD	_IOWR(KVMIO,  0xd4, struct kvm_create_guest_memfd)
 #define GUEST_MEMFD_FLAG_MMAP		(1ULL << 0)
 #define GUEST_MEMFD_FLAG_INIT_SHARED	(1ULL << 1)
