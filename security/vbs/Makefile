@@ -2,6 +2,7 @@
 obj-$(CONFIG_VBS) += vbs.o
 vbs-y := core.o probe.o
 
+vbs-$(CONFIG_VBS_HEKI)		+= heki.o
 obj-$(CONFIG_VBS_KVM_PLANES)	+= kvm_planes.o
 obj-$(CONFIG_VBS_SEV_SNP)	+= sev_snp.o
 obj-$(CONFIG_VBS_TDX)		+= tdx.o
