@@ -43,6 +43,7 @@
 #include <linux/kmsg_dump.h>
 #include <linux/dma-map-ops.h>
 #include <linux/sysfs.h>
+#include <linux/vbs.h>
 
 #include <asm/page.h>
 #include <asm/sections.h>
@@ -579,6 +580,10 @@ void kimage_free(struct kimage *image)
 
 	if (!image)
 		return;
+
+	/* Notify the secure kernel that a kexec image is being freed */
+	if (vbs_available())
+		vbs_kexec_invalidate();
 
 #ifdef CONFIG_CRASH_DUMP
 	if (image->vmcoreinfo_data_copy) {
