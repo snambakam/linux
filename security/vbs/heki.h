@@ -82,6 +82,20 @@ struct vbs_unload_module_req {
 	char	name[56];	/* module name (null-terminated)          */
 } __packed;
 
+/* ── Kexec validation ─────────────────────────────────────────────────── */
+
+/*
+ * VBS_CALL_KEXEC_VALIDATE payload — plane-0 sends the GPA and size of
+ * the kexec kernel image for plane-1 validation before allowing the
+ * kexec to proceed.
+ */
+struct vbs_kexec_validate_req {
+	__u64	kernel_gpa;	/* GPA of the kernel image buffer         */
+	__u64	kernel_size;	/* size of the kernel image               */
+	__u32	sig_ok;		/* 1 if kernel's sig check passed         */
+	__u32	flags;		/* reserved, must be 0                   */
+} __packed;
+
 /* ── x86-64 page table walker (for plane-1 auditing) ─────────────────── */
 
 /* Classification of a guest-physical page based on page table walk */
