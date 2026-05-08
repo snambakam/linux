@@ -164,3 +164,35 @@ int vbs_kexec_invalidate(void)
 	return ops->kexec_invalidate();
 }
 EXPORT_SYMBOL_GPL(vbs_kexec_invalidate);
+
+/* ── HEKI: automatic kernel sealing at late init ──────────────────────── */
+
+static int __init vbs_heki_late_init(void)
+{
+	const struct vbs_ops *ops = READ_ONCE(vbs_backend);
+	int ret;
+
+	if (!ops) {
+		pr_debug("vbs: HEKI: no backend, skipping kernel seal\n");
+		return 0;
+	}
+
+	/* Initialize the backend (allocates shared memory, etc.) */
+	if (ops->init) {
+		ret = ops->init();
+		if (ret) {
+			pr_warn("vbs: HEKI: backend init failed (%d)\n", ret);
+			return 0;
+		}
+	}
+
+	pr_info("vbs: HEKI: sealing kernel text and rodata\n");
+	ret = vbs_seal_kernel();
+	if (ret)
+		pr_warn("vbs: HEKI: seal_kernel failed (%d)\n", ret);
+	else
+		pr_info("vbs: HEKI: kernel sealed successfully\n");
+
+	return 0;
+}
+late_initcall(vbs_heki_late_init);

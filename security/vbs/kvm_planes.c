@@ -23,7 +23,11 @@
 #include <linux/mm.h>
 #include <linux/io.h>
 #include <linux/kvm_para.h>
+#include <asm/sections.h>
 #include <asm/kvm_para.h>
+#include <asm/processor.h>
+
+#include "heki.h"
 
 /* ── shared-memory calling area (modelled after the SVSM CAA) ─────── */
 
@@ -122,7 +126,20 @@ static int kvm_planes_protect_memory(unsigned long pfn,
 
 static int kvm_planes_seal_kernel(void)
 {
-	return kvm_planes_vtl_call(VBS_CALL_SEAL_KERNEL, NULL, 0, NULL, 0);
+	struct vbs_seal_kernel_req req = {
+		.text_gpa    = __pa_symbol(_stext),
+		.text_size   = PAGE_ALIGN((u64)(_etext - _stext)),
+		.rodata_gpa  = __pa_symbol(__start_rodata),
+		.rodata_size = PAGE_ALIGN((u64)(__end_rodata - __start_rodata)),
+		.cr3         = read_cr3_pa(),
+	};
+
+	pr_info("vbs-kvm: seal_kernel text=[0x%llx+0x%llx] rodata=[0x%llx+0x%llx] cr3=0x%llx\n",
+		req.text_gpa, req.text_size,
+		req.rodata_gpa, req.rodata_size, req.cr3);
+
+	return kvm_planes_vtl_call(VBS_CALL_SEAL_KERNEL,
+				   &req, sizeof(req), NULL, 0);
 }
 
 /* ── module authentication ────────────────────────────────────────────── */
