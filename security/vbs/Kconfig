@@ -15,6 +15,20 @@ config VBS
 
 	  If unsure, say N.
 
+config VBS_HEKI
+	bool "HEKI: Hypervisor-Enforced Kernel Integrity"
+	depends on VBS && X86_64
+	help
+	  Enable the HEKI subsystem which provides:
+	  - x86-64 page table walker for auditing guest kernel mappings
+	  - Kernel seal support (make kernel text/rodata immutable via
+	    EPT permission enforcement)
+
+	  This code runs in plane-1 (secure kernel) to inspect and
+	  protect plane-0's address space.
+
+	  If unsure, say N.
+
 config VBS_KVM_PLANES
 	bool "VBS backend: KVM software planes"
 	depends on VBS && KVM_GUEST
