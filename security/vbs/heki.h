@@ -36,6 +36,52 @@ struct vbs_seal_kernel_req {
 	__u64	cr3;		/* plane-0 kernel CR3 for verification    */
 } __packed;
 
+/* ── Module authentication ────────────────────────────────────────────── */
+
+/*
+ * VBS_CALL_VALIDATE_MODULE payload — plane-0 sends the GPA of the module
+ * ELF blob and its appended PKCS#7 signature for plane-1 verification.
+ * The module blob is in guest physical memory; the secure side reads it
+ * directly via the GPA (no copy through the CAA page).
+ */
+struct vbs_validate_module_req {
+	char	name[56];	/* module name (null-terminated)          */
+	__u64	elf_gpa;	/* GPA of the module ELF data             */
+	__u64	elf_size;	/* size of the ELF data (excl. signature) */
+	__u32	sig_ok;		/* 1 if kernel's sig check passed         */
+	__u32	reserved;	/* padding                               */
+} __packed;
+
+/*
+ * Per-section descriptor for VBS_CALL_SET_MODULE_PERMS.
+ * Sent as an array in the CAA buffer after the module name.
+ */
+struct vbs_module_section {
+	__u64	gpa;		/* section GPA (page-aligned)             */
+	__u64	size;		/* section size (page-aligned)            */
+	__u32	perms;		/* VBS_MEM_* permission flags             */
+	__u32	type;		/* enum mod_mem_type                      */
+} __packed;
+
+/*
+ * VBS_CALL_SET_MODULE_PERMS payload — after relocation, plane-0 sends
+ * the per-section layout so plane-1 can set EPT permissions.
+ * Sections follow immediately after this header in the buffer.
+ */
+struct vbs_set_module_perms_req {
+	char	name[56];	/* module name (null-terminated)          */
+	__u32	nr_sections;	/* number of vbs_module_section entries   */
+	__u32	flags;		/* reserved, must be 0                   */
+	/* struct vbs_module_section sections[]; follows in buffer */
+} __packed;
+
+/*
+ * VBS_CALL_UNLOAD_MODULE payload — module is being freed.
+ */
+struct vbs_unload_module_req {
+	char	name[56];	/* module name (null-terminated)          */
+} __packed;
+
 /* ── x86-64 page table walker (for plane-1 auditing) ─────────────────── */
 
 /* Classification of a guest-physical page based on page table walk */
