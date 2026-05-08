@@ -282,12 +282,34 @@ static int kvm_planes_send_certs(const void *certs, size_t certs_size)
 static int kvm_planes_kexec_validate(const void *kernel, size_t kernel_size,
 				     const void *sig, size_t sig_size)
 {
+	struct vbs_kexec_validate_req req = {};
+	struct page *page;
+
+	if (!kernel || !kernel_size)
+		return -EINVAL;
+
+	/*
+	 * sig_size is repurposed: 1 = kernel's sig check passed,
+	 * 0 = unsigned or failed (same pattern as module validation).
+	 */
+	req.sig_ok = sig_size ? 1 : 0;
+	req.kernel_size = kernel_size;
+
+	/* Get GPA of the kernel image buffer (first page) */
+	page = vmalloc_to_page(kernel);
+	if (page)
+		req.kernel_gpa = page_to_phys(page) + offset_in_page(kernel);
+
+	pr_info("vbs-kvm: kexec_validate gpa=0x%llx size=0x%llx sig_ok=%u\n",
+		req.kernel_gpa, req.kernel_size, req.sig_ok);
+
 	return kvm_planes_vtl_call(VBS_CALL_KEXEC_VALIDATE,
-				   NULL, 0, NULL, 0);
+				   &req, sizeof(req), NULL, 0);
 }
 
 static int kvm_planes_kexec_invalidate(void)
 {
+	pr_info("vbs-kvm: kexec_invalidate\n");
 	return kvm_planes_vtl_call(VBS_CALL_KEXEC_INVALIDATE,
 				   NULL, 0, NULL, 0);
 }

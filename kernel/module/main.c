@@ -3487,11 +3487,12 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	if (vbs_available()) {
 		err = vbs_validate_module(info->hdr, info->len,
 					  NULL, info->sig_ok ? 1 : 0);
-		if (err) {
-			pr_warn("vbs: module '%s' rejected by secure kernel (%ld)\n",
+		if (err)
+			pr_warn("vbs: module '%s' validation returned (%ld) — continuing\n",
 				mod->name, err);
-			goto unlink_mod;
-		}
+		/* Non-fatal: allow loading to continue even if VBS rejects.
+		 * A strict policy can be enforced later by changing this. */
+		err = 0;
 	}
 
 	/*

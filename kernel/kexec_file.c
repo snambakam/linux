@@ -27,6 +27,7 @@
 #include <linux/syscalls.h>
 #include <linux/vmalloc.h>
 #include <linux/dma-map-ops.h>
+#include <linux/vbs.h>
 #include "kexec_internal.h"
 
 #ifdef CONFIG_KEXEC_SIG
@@ -243,6 +244,25 @@ kimage_file_prepare_segments(struct kimage *image, int kernel_fd, int initrd_fd,
 	if (ret)
 		goto out;
 #endif
+
+	/*
+	 * If VBS is available, ask the secure kernel (plane-1) to
+	 * validate the kexec kernel image.  Pass sig_ok based on
+	 * whether CONFIG_KEXEC_SIG is enabled and the check passed.
+	 */
+	if (vbs_available()) {
+		int sig_ok = 0;
+#ifdef CONFIG_KEXEC_SIG
+		sig_ok = 1;  /* we got here, so sig check passed */
+#endif
+		ret = vbs_kexec_validate(image->kernel_buf,
+					 image->kernel_buf_len,
+					 NULL, sig_ok);
+		if (ret) {
+			pr_warn("vbs: kexec kernel rejected by secure kernel (%zd)\n", ret);
+			goto out;
+		}
+	}
 	/* It is possible that there no initramfs is being loaded */
 	if (!(flags & KEXEC_FILE_NO_INITRAMFS)) {
 		ret = kernel_read_file_from_fd(initrd_fd, 0, &image->initrd_buf,
