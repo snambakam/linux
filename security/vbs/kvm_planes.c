@@ -23,6 +23,9 @@
 #include <linux/mm.h>
 #include <linux/io.h>
 #include <linux/kvm_para.h>
+#include <linux/module.h>
+#include <linux/string.h>
+#include <linux/elf.h>
 #include <asm/sections.h>
 #include <asm/kvm_para.h>
 #include <asm/processor.h>
@@ -147,26 +150,111 @@ static int kvm_planes_seal_kernel(void)
 static int kvm_planes_validate_module(const void *elf, size_t elf_size,
 				      const void *sig, size_t sig_size)
 {
+	struct vbs_validate_module_req req = {};
+	struct page *elf_page;
+	const Elf64_Ehdr *ehdr;
+
+	if (!elf || !elf_size)
+		return -EINVAL;
+
 	/*
-	 * Module blobs can be large — for the KVM planes backend we pass
-	 * the physical address and size to plane-1 via the VTL call and
-	 * let plane-1 map/read the pages directly from its EPT view.
-	 * For now, a stub that signals "not yet implemented".
+	 * sig_size is repurposed: 1 = kernel's own sig check passed,
+	 * 0 = module is unsigned or sig check failed.
 	 */
+	req.sig_ok = sig_size ? 1 : 0;
+
+	/* Try to extract the module name from the ELF .modinfo section.
+	 * For now, just use a placeholder — the name is available at
+	 * the call site in load_module() but not passed through the
+	 * vbs_ops interface which takes (elf, elf_size, sig, sig_size).
+	 */
+	ehdr = elf;
+	if (elf_size >= sizeof(*ehdr) && ehdr->e_ident[0] == 0x7f)
+		strscpy(req.name, "module", sizeof(req.name));
+	else
+		strscpy(req.name, "unknown", sizeof(req.name));
+
+	/* Get GPA of the ELF blob */
+	elf_page = vmalloc_to_page(elf);
+	if (elf_page) {
+		req.elf_gpa  = page_to_phys(elf_page) +
+			       offset_in_page(elf);
+		req.elf_size = elf_size;
+	}
+
+	pr_debug("vbs-kvm: validate_module elf_gpa=0x%llx size=0x%llx sig_ok=%u\n",
+		 req.elf_gpa, req.elf_size, req.sig_ok);
+
 	return kvm_planes_vtl_call(VBS_CALL_VALIDATE_MODULE,
-				   NULL, 0, NULL, 0);
+				   &req, sizeof(req), NULL, 0);
 }
 
 static int kvm_planes_set_module_perms(const struct module *mod)
 {
+	struct {
+		struct vbs_set_module_perms_req hdr;
+		struct vbs_module_section sections[MOD_MEM_NUM_TYPES];
+	} __packed req = {};
+	int i, n = 0;
+
+	strscpy(req.hdr.name, mod->name, sizeof(req.hdr.name));
+
+	for (i = 0; i < MOD_MEM_NUM_TYPES; i++) {
+		const struct module_memory *mem = &mod->mem[i];
+		struct vbs_module_section *sec;
+		unsigned long gpa;
+		struct page *p;
+
+		if (!mem->base || !mem->size)
+			continue;
+
+		p = vmalloc_to_page(mem->base);
+		if (!p)
+			continue;
+
+		gpa = page_to_phys(p) + offset_in_page(mem->base);
+		sec = &req.sections[n];
+		sec->gpa   = gpa;
+		sec->size  = PAGE_ALIGN(mem->size);
+		sec->type  = i;
+
+		/* Set permissions based on section type */
+		switch (i) {
+		case MOD_TEXT:
+		case MOD_INIT_TEXT:
+			sec->perms = VBS_MEM_READ | VBS_MEM_EXEC;
+			break;
+		case MOD_RODATA:
+		case MOD_RO_AFTER_INIT:
+		case MOD_INIT_RODATA:
+			sec->perms = VBS_MEM_READ;
+			break;
+		default: /* MOD_DATA, MOD_INIT_DATA */
+			sec->perms = VBS_MEM_READ | VBS_MEM_WRITE;
+			break;
+		}
+		n++;
+	}
+
+	req.hdr.nr_sections = n;
+
+	pr_debug("vbs-kvm: set_module_perms %s: %d sections\n",
+		 mod->name, n);
+
 	return kvm_planes_vtl_call(VBS_CALL_SET_MODULE_PERMS,
-				   NULL, 0, NULL, 0);
+				   &req,
+				   sizeof(req.hdr) + n * sizeof(req.sections[0]),
+				   NULL, 0);
 }
 
 static int kvm_planes_unload_module(const struct module *mod)
 {
+	struct vbs_unload_module_req req = {};
+
+	strscpy(req.name, mod->name, sizeof(req.name));
+
 	return kvm_planes_vtl_call(VBS_CALL_UNLOAD_MODULE,
-				   NULL, 0, NULL, 0);
+				   &req, sizeof(req), NULL, 0);
 }
 
 /* ── key / certificate management ─────────────────────────────────────── */
