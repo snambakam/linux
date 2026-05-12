@@ -259,7 +259,7 @@ kimage_file_prepare_segments(struct kimage *image, int kernel_fd, int initrd_fd,
 					 image->kernel_buf_len,
 					 NULL, sig_ok);
 		if (ret) {
-			pr_warn("vbs: kexec kernel rejected by secure kernel (%d)\n", ret);
+			pr_warn("vbs: kexec kernel rejected by secure kernel (%zd)\n", ret);
 			goto out;
 		}
 	}
