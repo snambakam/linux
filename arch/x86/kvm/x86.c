@@ -11129,7 +11129,7 @@ void kvm_inc_or_dec_irq_window_inhibit(struct kvm *kvm, bool inc)
 	 */
 	guard(rwsem_write)(&kvm->arch.apicv_update_lock);
 	if (atomic_add_return(add, &kvm->arch.apicv_nr_irq_window_req) == inc)
-		__kvm_set_or_clear_apicv_inhibit(kvm, APICV_INHIBIT_REASON_IRQWIN, inc);
+		__kvm_set_or_clear_apicv_inhibit(kvm->planes[0], APICV_INHIBIT_REASON_IRQWIN, inc);
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_inc_or_dec_irq_window_inhibit);
 

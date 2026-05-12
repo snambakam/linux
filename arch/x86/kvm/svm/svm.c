@@ -3240,7 +3240,7 @@ static int interrupt_window_interception(struct kvm_vcpu *vcpu)
 	kvm_make_request(KVM_REQ_EVENT, vcpu);
 	svm_clear_vintr(to_svm(vcpu));
 
-	++vcpu->stat.irq_window_exits;
+	++vcpu->stat->irq_window_exits;
 	return 1;
 }
 
