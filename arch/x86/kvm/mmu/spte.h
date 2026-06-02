@@ -569,4 +569,32 @@ static inline u64 restore_acc_track_spte(u64 spte)
 void __init kvm_mmu_spte_module_init(void);
 void kvm_mmu_reset_all_pte_masks(void);
 
+/*
+ * Apply memory protection attributes to pte_access.
+ * If memory attributes have NO_WRITE or NO_EXEC set for a GFN,
+ * strip the corresponding access bits before building the SPTE.
+ */
+#ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
+static inline unsigned int kvm_plane_filter_pte_access(struct kvm_vcpu *vcpu,
+						       gfn_t gfn,
+						       unsigned int pte_access)
+{
+	unsigned long attrs;
+
+	attrs = kvm_get_memory_attributes(vcpu->kvm, gfn);
+	if (attrs & KVM_MEMORY_ATTRIBUTE_NO_WRITE)
+		pte_access &= ~ACC_WRITE_MASK;
+	if (attrs & KVM_MEMORY_ATTRIBUTE_NO_EXEC)
+		pte_access &= ~ACC_EXEC_MASK;
+
+	return pte_access;
+}
+#else
+static inline unsigned int kvm_plane_filter_pte_access(struct kvm_vcpu *vcpu,
+						       gfn_t gfn,
+						       unsigned int pte_access)
+{
+	return pte_access;
+}
+#endif
 #endif
