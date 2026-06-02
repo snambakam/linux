@@ -569,7 +569,7 @@ static int __sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp,
 	INIT_LIST_HEAD(&sev->mirror_vms);
 	sev->need_init = false;
 
-	kvm_set_apicv_inhibit(kvm->planes[0], APICV_INHIBIT_REASON_SEV);
+	kvm_set_apicv_inhibit(kvm, APICV_INHIBIT_REASON_SEV);
 
 	return 0;
 
@@ -4832,7 +4832,7 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 				       svm->sev_es.ghcb_sa);
 	}
 	case SVM_VMGEXIT_NMI_COMPLETE:
-		++vcpu->stat->nmi_window_exits;
+		++vcpu->stat.nmi_window_exits;
 		svm->nmi_masked = false;
 		kvm_make_request(KVM_REQ_EVENT, vcpu);
 		return 1;
