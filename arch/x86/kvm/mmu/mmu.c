@@ -3090,7 +3090,7 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 	}
 
 	if (unlikely(is_noslot_pfn(pfn))) {
-		vcpu->stat->pf_mmio_spte_created++;
+		vcpu->stat.pf_mmio_spte_created++;
 		mark_mmio_spte(vcpu, sptep, gfn, pte_access);
 		if (flush)
 			kvm_flush_remote_tlbs_gfn(vcpu->kvm, gfn, level);
@@ -3798,7 +3798,7 @@ static int fast_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 	walk_shadow_page_lockless_end(vcpu);
 
 	if (ret != RET_PF_INVALID)
-		vcpu->stat->pf_fast++;
+		vcpu->stat.pf_fast++;
 
 	return ret;
 }
@@ -4584,7 +4584,7 @@ void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu, struct kvm_async_pf *work)
 	 * truly spurious and never trigger emulation
 	 */
 	if (r == RET_PF_FIXED)
-		vcpu->stat->pf_fixed++;
+		vcpu->stat.pf_fixed++;
 }
 
 static void kvm_mmu_finish_page_fault(struct kvm_vcpu *vcpu,
@@ -6452,7 +6452,7 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 	}
 
 	if (r == RET_PF_INVALID) {
-		vcpu->stat->pf_taken++;
+		vcpu->stat.pf_taken++;
 
 		r = kvm_mmu_do_page_fault(vcpu, cr2_or_gpa, error_code, false,
 					  &emulation_type, NULL);
@@ -6468,11 +6468,11 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 						&emulation_type);
 
 	if (r == RET_PF_FIXED)
-		vcpu->stat->pf_fixed++;
+		vcpu->stat.pf_fixed++;
 	else if (r == RET_PF_EMULATE)
-		vcpu->stat->pf_emulate++;
+		vcpu->stat.pf_emulate++;
 	else if (r == RET_PF_SPURIOUS)
-		vcpu->stat->pf_spurious++;
+		vcpu->stat.pf_spurious++;
 
 	/*
 	 * None of handle_mmio_page_fault(), kvm_mmu_do_page_fault(), or
@@ -6586,7 +6586,7 @@ void kvm_mmu_invlpg(struct kvm_vcpu *vcpu, gva_t gva)
 	 * done here for them.
 	 */
 	kvm_mmu_invalidate_addr(vcpu, vcpu->arch.walk_mmu, gva, KVM_MMU_ROOTS_ALL);
-	++vcpu->stat->invlpg;
+	++vcpu->stat.invlpg;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_mmu_invlpg);
 
@@ -6608,7 +6608,7 @@ void kvm_mmu_invpcid_gva(struct kvm_vcpu *vcpu, gva_t gva, unsigned long pcid)
 
 	if (roots)
 		kvm_mmu_invalidate_addr(vcpu, mmu, gva, roots);
-	++vcpu->stat->invlpg;
+	++vcpu->stat.invlpg;
 
 	/*
 	 * Mappings not reachable via the current cr3 or the prev_roots will be
@@ -7939,13 +7939,11 @@ static void hugepage_set_mixed(struct kvm_memory_slot *slot, gfn_t gfn,
 	lpage_info_slot(gfn, slot, level)->disallow_lpage |= KVM_LPAGE_MIXED_FLAG;
 }
 
-bool kvm_arch_pre_set_memory_attributes(struct kvm_plane *plane,
+bool kvm_arch_pre_set_memory_attributes(struct kvm *kvm,
 					struct kvm_gfn_range *range)
 {
 	struct kvm_memory_slot *slot = range->slot;
 	int level;
-
-	struct kvm *kvm = plane->kvm;
 
 	/*
 	 * Zap SPTEs even if the slot can't be mapped PRIVATE.  KVM x86 only
@@ -8002,27 +8000,26 @@ bool kvm_arch_pre_set_memory_attributes(struct kvm_plane *plane,
 	return kvm_unmap_gfn_range(kvm, range);
 }
 
-static bool hugepage_has_attrs(struct kvm_plane *plane, struct kvm_memory_slot *slot,
+static bool hugepage_has_attrs(struct kvm *kvm, struct kvm_memory_slot *slot,
 			       gfn_t gfn, int level, unsigned long attrs)
 {
 	const unsigned long start = gfn;
 	const unsigned long end = start + KVM_PAGES_PER_HPAGE(level);
 
 	if (level == PG_LEVEL_2M)
-		return kvm_range_has_memory_attributes(plane, start, end, ~0, attrs);
+		return kvm_range_has_memory_attributes(kvm, start, end, ~0, attrs);
 
 	for (gfn = start; gfn < end; gfn += KVM_PAGES_PER_HPAGE(level - 1)) {
 		if (hugepage_test_mixed(slot, gfn, level - 1) ||
-		    attrs != kvm_get_plane_memory_attributes(plane, gfn))
+		    attrs != kvm_get_memory_attributes(kvm, gfn))
 			return false;
 	}
 	return true;
 }
 
-bool kvm_arch_post_set_memory_attributes(struct kvm_plane *plane,
+bool kvm_arch_post_set_memory_attributes(struct kvm *kvm,
 					 struct kvm_gfn_range *range)
 {
-	struct kvm *kvm = plane->kvm;
 	unsigned long attrs = range->arg.attributes;
 	struct kvm_memory_slot *slot = range->slot;
 	int level;
@@ -8056,7 +8053,7 @@ bool kvm_arch_post_set_memory_attributes(struct kvm_plane *plane,
 			 */
 			if (gfn >= slot->base_gfn &&
 			    gfn + nr_pages <= slot->base_gfn + slot->npages) {
-				if (hugepage_has_attrs(plane, slot, gfn, level, attrs))
+				if (hugepage_has_attrs(kvm, slot, gfn, level, attrs))
 					hugepage_clear_mixed(slot, gfn, level);
 				else
 					hugepage_set_mixed(slot, gfn, level);
@@ -8078,7 +8075,7 @@ bool kvm_arch_post_set_memory_attributes(struct kvm_plane *plane,
 		 */
 		if (gfn < range->end &&
 		    (gfn + nr_pages) <= (slot->base_gfn + slot->npages)) {
-			if (hugepage_has_attrs(plane, slot, gfn, level, attrs))
+			if (hugepage_has_attrs(kvm, slot, gfn, level, attrs))
 				hugepage_clear_mixed(slot, gfn, level);
 			else
 				hugepage_set_mixed(slot, gfn, level);
@@ -8090,13 +8087,11 @@ bool kvm_arch_post_set_memory_attributes(struct kvm_plane *plane,
 void kvm_mmu_init_memslot_memory_attributes(struct kvm *kvm,
 					    struct kvm_memory_slot *slot)
 {
-	struct kvm_plane *plane0;
 	int level;
 
 	if (!kvm_arch_has_private_mem(kvm))
 		return;
 
-	plane0 = kvm->planes[0];
 	for (level = PG_LEVEL_2M; level <= KVM_MAX_HUGEPAGE_LEVEL; level++) {
 		/*
 		 * Don't bother tracking mixed attributes for pages that can't
@@ -8116,9 +8111,9 @@ void kvm_mmu_init_memslot_memory_attributes(struct kvm *kvm,
 		 * be manually checked as the attributes may already be mixed.
 		 */
 		for (gfn = start; gfn < end; gfn += nr_pages) {
-			unsigned long attrs = kvm_get_plane_memory_attributes(plane0, gfn);
+			unsigned long attrs = kvm_get_memory_attributes(kvm, gfn);
 
-			if (hugepage_has_attrs(plane0, slot, gfn, level, attrs))
+			if (hugepage_has_attrs(kvm, slot, gfn, level, attrs))
 				hugepage_clear_mixed(slot, gfn, level);
 			else
 				hugepage_set_mixed(slot, gfn, level);

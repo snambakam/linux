@@ -145,7 +145,7 @@ static void synic_update_vector(struct kvm_vcpu_hv_synic *synic,
 	 * Inhibit APICv if any vCPU is using SynIC's AutoEOI, which relies on
 	 * the hypervisor to manually inject IRQs.
 	 */
-	__kvm_set_or_clear_apicv_inhibit(vcpu_to_plane(vcpu),
+	__kvm_set_or_clear_apicv_inhibit(vcpu->kvm,
 					 APICV_INHIBIT_REASON_HYPERV,
 					 !!hv->synic_auto_eoi_used);
 
@@ -491,8 +491,6 @@ static int synic_set_irq(struct kvm_vcpu_hv_synic *synic, u32 sint)
 	irq.delivery_mode = APIC_DM_FIXED;
 	irq.vector = vector;
 	irq.level = 1;
-	irq.plane = vcpu->plane;
-
 	ret = kvm_irq_delivery_to_apic(vcpu->plane, vcpu->arch.apic, &irq);
 	trace_kvm_hv_synic_set_irq(vcpu->vcpu_id, sint, irq.vector, ret);
 	return ret;
@@ -1994,7 +1992,7 @@ int kvm_hv_vcpu_flush_tlb(struct kvm_vcpu *vcpu)
 			kvm_x86_call(flush_tlb_gva)(vcpu, gva + j * PAGE_SIZE);
 		}
 
-		++vcpu->stat->tlb_flush;
+		++vcpu->stat.tlb_flush;
 	}
 	return 0;
 
@@ -2396,7 +2394,7 @@ static int kvm_hv_hypercall_complete(struct kvm_vcpu *vcpu, u64 result)
 
 	trace_kvm_hv_hypercall_done(result);
 	kvm_hv_hypercall_set_result(vcpu, result);
-	++vcpu->stat->hypercalls;
+	++vcpu->stat.hypercalls;
 
 	ret = kvm_skip_emulated_instruction(vcpu);
 
