@@ -364,7 +364,7 @@ static int kvm_handle_exit(struct kvm_run *run, struct kvm_vcpu *vcpu)
 		ret = kvm_handle_fault(vcpu, ecode);
 	} else {
 		WARN(!intr, "vm exiting with suspicious irq\n");
-		++vcpu->stat.int_exits;
+		++vcpu->stat->int_exits;
 	}
 
 	if (ret == RESUME_GUEST)
@@ -1527,7 +1527,7 @@ int kvm_arch_vcpu_precreate(struct kvm *kvm, unsigned int id)
 	return 0;
 }
 
-int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
+int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu, struct kvm_plane *plane)
 {
 	unsigned long timer_hz;
 	struct loongarch_csrs *csr;

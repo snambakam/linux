@@ -40,6 +40,7 @@
 #include <linux/vmalloc.h>
 #include <linux/kernel_stat.h>
 #include <linux/start_kernel.h>
+#include <linux/vm_planes.h>
 #include <linux/security.h>
 #include <linux/smp.h>
 #include <linux/profile.h>
@@ -1706,6 +1707,10 @@ static noinline void __init kernel_init_freeable(void)
 
 	wait_for_initramfs();
 	console_on_rootfs();
+
+#ifdef CONFIG_VM_PLANES
+	arch_init_vm_planes();
+#endif
 
 	/*
 	 * check if there is an early userspace init.  If yes, let it do all

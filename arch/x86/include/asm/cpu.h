@@ -4,10 +4,20 @@
 
 #include <linux/device.h>
 #include <linux/cpu.h>
+#include <linux/init.h>
 #include <linux/topology.h>
 #include <linux/nodemask.h>
 #include <linux/percpu.h>
 #include <asm/ibt.h>
+
+#ifdef CONFIG_VM_PLANES
+struct vm_plane_config;
+
+int __init alloc_vm_planes(unsigned int plane_count,
+			    struct vm_plane_config *plane_cfg);
+int __init activate_vm_planes(unsigned int plane_count,
+			       struct vm_plane_config *plane_cfg);
+#endif
 
 #ifndef CONFIG_SMP
 #define cpu_physical_id(cpu)			boot_cpu_physical_apicid

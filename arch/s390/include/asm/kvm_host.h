@@ -470,6 +470,9 @@ struct kvm_vm_stat {
 struct kvm_arch_memory_slot {
 };
 
+struct kvm_arch_plane {
+};
+
 struct s390_map_info {
 	struct list_head list;
 	__u64 guest_addr;
@@ -750,8 +753,14 @@ extern int kvm_s390_enter_exit_sie(struct kvm_s390_sie_block *scb,
 extern int kvm_s390_gisc_register(struct kvm *kvm, u32 gisc);
 extern int kvm_s390_gisc_unregister(struct kvm *kvm, u32 gisc);
 
+<<<<<<< HEAD
 bool kvm_s390_is_gpa_in_memslot(struct kvm *kvm, gpa_t gpa);
 
+=======
+static inline void kvm_arch_init_plane(struct kvm_plane *plane) {}
+static inline void kvm_arch_free_plane(struct kvm_plane *plane) {}
+static inline void kvm_arch_sync_events(struct kvm *kvm) {}
+>>>>>>> 025bc1702287 (KVM: introduce struct kvm_arch_plane)
 static inline void kvm_arch_free_memslot(struct kvm *kvm,
 					 struct kvm_memory_slot *slot) {}
 static inline void kvm_arch_memslots_updated(struct kvm *kvm, u64 gen) {}

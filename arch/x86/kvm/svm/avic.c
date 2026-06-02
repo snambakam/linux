@@ -427,7 +427,7 @@ static int avic_init_backing_page(struct kvm_vcpu *vcpu)
 	 * fully initialized AVIC.
 	 */
 	if (id > max_id) {
-		kvm_set_apicv_inhibit(vcpu->kvm, APICV_INHIBIT_REASON_PHYSICAL_ID_TOO_BIG);
+		kvm_set_apicv_inhibit(vcpu->kvm->planes[0], APICV_INHIBIT_REASON_PHYSICAL_ID_TOO_BIG);
 		vcpu->arch.apic->apicv_active = false;
 		return 0;
 	}

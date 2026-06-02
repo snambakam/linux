@@ -39,6 +39,7 @@
 #include <linux/string.h>
 #include <linux/mutex.h>
 #include <linux/rculist.h>
+#include <linux/vbs.h>
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <linux/set_memory.h>
@@ -1417,6 +1418,11 @@ static void free_mod_mem(struct module *mod)
 static void free_module(struct module *mod)
 {
 	trace_module_free(mod);
+
+	/* Notify the secure kernel that this module is being unloaded
+	 * so it can release any EPT permission overrides. */
+	if (vbs_available())
+		vbs_unload_module(mod);
 
 	codetag_unload_module(mod);
 
@@ -3473,6 +3479,23 @@ static int load_module(struct load_info *info, const char __user *uargs,
 		goto free_module;
 
 	/*
+	 * If VBS is available, ask the secure kernel (plane-1) to
+	 * validate this module.  We pass the module name and the
+	 * sig_ok flag from the kernel's own signature check.
+	 * Plane-1 can enforce additional policy (e.g., allowlist).
+	 */
+	if (vbs_available()) {
+		err = vbs_validate_module(info->hdr, info->len,
+					  NULL, info->sig_ok ? 1 : 0);
+		if (err)
+			pr_warn("vbs: module '%s' validation returned (%ld) — continuing\n",
+				mod->name, err);
+		/* Non-fatal: allow loading to continue even if VBS rejects.
+		 * A strict policy can be enforced later by changing this. */
+		err = 0;
+	}
+
+	/*
 	 * We are tainting your kernel if your module gets into
 	 * the modules linked list somehow.
 	 */
@@ -3538,6 +3561,21 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	err = complete_formation(mod, info);
 	if (err)
 		goto ddebug_cleanup;
+
+	/*
+	 * If VBS is available, send the module's per-section layout
+	 * to the secure kernel so it can enforce EPT permissions:
+	 * text → R+X (NO_WRITE), rodata → R (NO_WRITE|NO_EXEC),
+	 * data → R+W (no restrictions).
+	 */
+	if (vbs_available()) {
+		err = vbs_set_module_perms(mod);
+		if (err)
+			pr_warn("vbs: set_module_perms for %s failed (%ld)\n",
+				mod->name, err);
+		/* Non-fatal: continue loading even if protection fails */
+		err = 0;
+	}
 
 	err = prepare_coming_module(mod);
 	if (err)
