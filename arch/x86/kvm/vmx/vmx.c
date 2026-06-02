@@ -1552,7 +1552,7 @@ void vmx_vcpu_load_vmcs(struct kvm_vcpu *vcpu, int cpu)
  */
 void vmx_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 {
-	if (vcpu->scheduled_out && !kvm_pause_in_guest(vcpu->kvm))
+	if (kvm_vcpu_scheduled_out(vcpu) && !kvm_pause_in_guest(vcpu->kvm))
 		shrink_ple_window(vcpu);
 
 	vmx_vcpu_load_vmcs(vcpu, cpu);
@@ -3595,7 +3595,7 @@ void vmx_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 	vmcs_writel(GUEST_CR4, hw_cr4);
 
 	if ((cr4 ^ old_cr4) & (X86_CR4_OSXSAVE | X86_CR4_PKE))
-		vcpu->arch.cpuid_dynamic_bits_dirty = true;
+		cpuid_set_dirty(vcpu);
 }
 
 void vmx_get_segment(struct kvm_vcpu *vcpu, struct kvm_segment *var, int seg)
@@ -5218,6 +5218,11 @@ int vmx_interrupt_allowed(struct kvm_vcpu *vcpu, bool for_injection)
 		return -EBUSY;
 
 	return !vmx_interrupt_blocked(vcpu);
+}
+
+int vmx_mce_allowed(struct kvm_vcpu *vcpu)
+{
+	return 1;
 }
 
 int vmx_set_tss_addr(struct kvm *kvm, unsigned int addr)
@@ -7989,7 +7994,7 @@ void vmx_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 	 * set if and only if XSAVE is supported.
 	 */
 	if (!guest_cpu_cap_has(vcpu, X86_FEATURE_XSAVE))
-		guest_cpu_cap_clear(vcpu, X86_FEATURE_XSAVES);
+		guest_cpu_cap_clear(vcpu->common, X86_FEATURE_XSAVES);
 
 	vmx_setup_uret_msrs(vmx);
 

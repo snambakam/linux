@@ -229,7 +229,7 @@ int svm_set_efer(struct kvm_vcpu *vcpu, u64 efer)
 			 * and only if the vCPU is actively running, e.g. to
 			 * avoid positives if userspace is stuffing state.
 			 */
-			if (is_guest_mode(vcpu) && vcpu->wants_to_run)
+			if (is_guest_mode(vcpu) && vcpu->common->wants_to_run)
 				kvm_make_request(KVM_REQ_TRIPLE_FAULT, vcpu);
 
 			svm_leave_nested(vcpu);
@@ -390,6 +390,9 @@ static void svm_inject_exception(struct kvm_vcpu *vcpu)
 
 	if (kvm_exception_is_soft(ex->vector) &&
 	    svm_update_soft_interrupt_rip(vcpu, ex->vector))
+		return;
+
+	if (sev_snp_queue_exception(vcpu))
 		return;
 
 	svm->vmcb->control.event_inj = ex->vector
@@ -1277,6 +1280,9 @@ static void __svm_vcpu_reset(struct kvm_vcpu *vcpu)
 
 	svm->nmi_masked = false;
 	svm->awaiting_iret_completion = false;
+
+	if (is_sev_es_guest(vcpu))
+		svm->sev_es.hvdb_gpa = INVALID_PAGE;
 }
 
 static void svm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
@@ -1469,7 +1475,7 @@ static void svm_prepare_host_switch(struct kvm_vcpu *vcpu)
 
 static void svm_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 {
-	if (vcpu->scheduled_out && !kvm_pause_in_guest(vcpu->kvm))
+	if (kvm_vcpu_scheduled_out(vcpu) && !kvm_pause_in_guest(vcpu->kvm))
 		shrink_ple_window(vcpu);
 
 	if (kvm_vcpu_apicv_active(vcpu))
@@ -1842,7 +1848,7 @@ void svm_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 	vmcb_mark_dirty(to_svm(vcpu)->vmcb, VMCB_CR);
 
 	if ((cr4 ^ old_cr4) & (X86_CR4_OSXSAVE | X86_CR4_PKE))
-		vcpu->arch.cpuid_dynamic_bits_dirty = true;
+		cpuid_set_dirty(vcpu);
 }
 
 static void svm_set_segment(struct kvm_vcpu *vcpu,
@@ -3732,6 +3738,9 @@ static void svm_inject_nmi(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
+	if (sev_snp_inject(INJECT_NMI, vcpu))
+		goto status;
+
 	svm->vmcb->control.event_inj = SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_NMI;
 
 	if (svm->nmi_l1_to_l2)
@@ -3746,6 +3755,8 @@ static void svm_inject_nmi(struct kvm_vcpu *vcpu)
 		svm->nmi_masked = true;
 		svm_set_iret_intercept(svm);
 	}
+
+status:
 	++vcpu->stat.nmi_injections;
 }
 
@@ -3815,9 +3826,11 @@ static void svm_inject_irq(struct kvm_vcpu *vcpu, bool reinjected)
 	}
 
 	trace_kvm_inj_virq(intr->nr, intr->soft, reinjected);
-	++vcpu->stat.irq_injections;
 
-	svm->vmcb->control.event_inj = intr->nr | SVM_EVTINJ_VALID | type;
+	if (!sev_snp_inject(INJECT_IRQ, vcpu))
+		svm->vmcb->control.event_inj = intr->nr | SVM_EVTINJ_VALID | type;
+
+	++vcpu->stat.irq_injections;
 }
 
 static void svm_fixup_nested_rips(struct kvm_vcpu *vcpu)
@@ -3857,7 +3870,7 @@ void svm_complete_interrupt_delivery(struct kvm_vcpu *vcpu, int delivery_mode,
 	 * apic->apicv_active must be read after vcpu->mode.
 	 * Pairs with smp_store_release in vcpu_enter_guest.
 	 */
-	bool in_guest_mode = (smp_load_acquire(&vcpu->mode) == IN_GUEST_MODE);
+	bool in_guest_mode = (kvm_vcpu_mode_acquire(vcpu) == IN_GUEST_MODE);
 
 	/* Note, this is called iff the local APIC is in-kernel. */
 	if (!READ_ONCE(vcpu->arch.apic->apicv_active)) {
@@ -3960,6 +3973,9 @@ bool svm_nmi_blocked(struct kvm_vcpu *vcpu)
 	if (!gif_set(svm))
 		return true;
 
+	if (sev_snp_is_rinj_active(vcpu))
+		return sev_snp_blocked(INJECT_NMI, vcpu);
+
 	if (is_guest_mode(vcpu) && nested_exit_on_nmi(svm))
 		return false;
 
@@ -3991,6 +4007,9 @@ bool svm_interrupt_blocked(struct kvm_vcpu *vcpu)
 
 	if (!gif_set(svm))
 		return true;
+
+	if (sev_snp_is_rinj_active(vcpu))
+		return sev_snp_blocked(INJECT_IRQ, vcpu);
 
 	if (is_guest_mode(vcpu)) {
 		/* As long as interrupts are being delivered...  */
@@ -4026,6 +4045,22 @@ static int svm_interrupt_allowed(struct kvm_vcpu *vcpu, bool for_injection)
 	 */
 	if (for_injection && is_guest_mode(vcpu) && nested_exit_on_intr(svm))
 		return -EBUSY;
+
+	return 1;
+}
+
+bool svm_mce_blocked(struct kvm_vcpu *vcpu)
+{
+	if (sev_snp_is_rinj_active(vcpu))
+		return sev_snp_blocked(INJECT_MCE, vcpu);
+
+	return false;
+}
+
+static int svm_mce_allowed(struct kvm_vcpu *vcpu)
+{
+	if (svm_mce_blocked(vcpu))
+		return 0;
 
 	return 1;
 }
@@ -4341,6 +4376,8 @@ static void svm_cancel_injection(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct vmcb_control_area *control = &svm->vmcb->control;
+
+	sev_snp_cancel_injection(vcpu);
 
 	control->exit_int_info = control->event_inj;
 	control->exit_int_info_err = control->event_inj_err;
@@ -4669,7 +4706,7 @@ static void svm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 	 * XSS on VM-Enter/VM-Exit.  Failure to do so would effectively give
 	 * the guest read/write access to the host's XSS.
 	 */
-	guest_cpu_cap_change(vcpu, X86_FEATURE_XSAVES,
+	guest_cpu_cap_change(vcpu->common, X86_FEATURE_XSAVES,
 			     boot_cpu_has(X86_FEATURE_XSAVES) &&
 			     guest_cpu_cap_has(vcpu, X86_FEATURE_XSAVE));
 
@@ -4679,7 +4716,7 @@ static void svm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 	 * SVM on Intel is bonkers and extremely unlikely to work).
 	 */
 	if (guest_cpuid_is_intel_compatible(vcpu))
-		guest_cpu_cap_clear(vcpu, X86_FEATURE_V_VMSAVE_VMLOAD);
+		guest_cpu_cap_clear(vcpu->common, X86_FEATURE_V_VMSAVE_VMLOAD);
 
 	if (is_sev_guest(vcpu))
 		sev_vcpu_after_set_cpuid(svm);
@@ -5267,6 +5304,31 @@ static void *svm_alloc_apic_backing_page(struct kvm_vcpu *vcpu)
 	return page_address(page);
 }
 
+static struct kvm_plane *svm_alloc_plane(void)
+{
+	struct kvm_svm_plane *svm_plane = kzalloc(sizeof(*svm_plane), GFP_KERNEL_ACCOUNT);
+
+	if (svm_plane)
+		return &svm_plane->plane;
+
+	return NULL;
+}
+
+static void svm_free_plane(struct kvm_plane *plane)
+{
+	struct kvm_svm_plane *svm_plane = to_kvm_svm_plane(plane);
+
+	kfree(svm_plane);
+}
+
+static unsigned svm_max_planes(struct kvm *kvm)
+{
+	if (____sev_snp_guest(kvm))
+		return sev_snp_max_planes(kvm);
+
+	return kvm_x86_default_max_planes(kvm);
+}
+
 struct kvm_x86_ops svm_x86_ops __initdata = {
 	.name = KBUILD_MODNAME,
 
@@ -5341,6 +5403,7 @@ struct kvm_x86_ops svm_x86_ops __initdata = {
 	.cancel_injection = svm_cancel_injection,
 	.interrupt_allowed = svm_interrupt_allowed,
 	.nmi_allowed = svm_nmi_allowed,
+	.mce_allowed = svm_mce_allowed,
 	.get_nmi_mask = svm_get_nmi_mask,
 	.set_nmi_mask = svm_set_nmi_mask,
 	.enable_nmi_window = svm_enable_nmi_window,
@@ -5407,6 +5470,10 @@ struct kvm_x86_ops svm_x86_ops __initdata = {
 	.gmem_prepare = sev_gmem_prepare,
 	.gmem_invalidate = sev_gmem_invalidate,
 	.gmem_max_mapping_level = sev_gmem_max_mapping_level,
+
+	.alloc_plane = svm_alloc_plane,
+	.free_plane = svm_free_plane,
+	.max_planes = svm_max_planes,
 };
 
 /*

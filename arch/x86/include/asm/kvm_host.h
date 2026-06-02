@@ -85,20 +85,20 @@
 						 KVM_X86_NOTIFY_VMEXIT_USER)
 
 /* x86-specific vcpu->requests bit members */
-#define KVM_REQ_MIGRATE_TIMER		KVM_ARCH_REQ(0)
+#define KVM_REQ_MIGRATE_TIMER		KVM_ARCH_PLANE_REQ(0)
 #define KVM_REQ_REPORT_TPR_ACCESS	KVM_ARCH_REQ(1)
 #define KVM_REQ_TRIPLE_FAULT		KVM_ARCH_REQ(2)
 #define KVM_REQ_MMU_SYNC		KVM_ARCH_REQ(3)
 #define KVM_REQ_CLOCK_UPDATE		KVM_ARCH_REQ(4)
 #define KVM_REQ_LOAD_MMU_PGD		KVM_ARCH_REQ(5)
-#define KVM_REQ_EVENT			KVM_ARCH_REQ(6)
+#define KVM_REQ_EVENT			KVM_ARCH_PLANE_REQ(6)
 #define KVM_REQ_APF_HALT		KVM_ARCH_REQ(7)
 #define KVM_REQ_STEAL_UPDATE		KVM_ARCH_REQ(8)
-#define KVM_REQ_NMI			KVM_ARCH_REQ(9)
-#define KVM_REQ_PMU			KVM_ARCH_REQ(10)
-#define KVM_REQ_PMI			KVM_ARCH_REQ(11)
+#define KVM_REQ_NMI			KVM_ARCH_PLANE_REQ(9)
+#define KVM_REQ_PMU			KVM_ARCH_PLANE_REQ(10)
+#define KVM_REQ_PMI			KVM_ARCH_PLANE_REQ(11)
 #ifdef CONFIG_KVM_SMM
-#define KVM_REQ_SMI			KVM_ARCH_REQ(12)
+#define KVM_REQ_SMI			KVM_ARCH_PLANE_REQ(12)
 #endif
 #define KVM_REQ_MASTERCLOCK_UPDATE	KVM_ARCH_REQ(13)
 #define KVM_REQ_MCLOCK_INPROGRESS \
@@ -109,7 +109,7 @@
 #define KVM_REQ_APIC_PAGE_RELOAD \
 	KVM_ARCH_REQ_FLAGS(17, KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
 #define KVM_REQ_HV_CRASH		KVM_ARCH_REQ(18)
-#define KVM_REQ_IOAPIC_EOI_EXIT		KVM_ARCH_REQ(19)
+#define KVM_REQ_IOAPIC_EOI_EXIT		KVM_ARCH_PLANE_REQ(19)
 #define KVM_REQ_HV_RESET		KVM_ARCH_REQ(20)
 #define KVM_REQ_HV_EXIT			KVM_ARCH_REQ(21)
 #define KVM_REQ_HV_STIMER		KVM_ARCH_REQ(22)
@@ -129,7 +129,7 @@
 #define KVM_REQ_HV_TLB_FLUSH \
 	KVM_ARCH_REQ_FLAGS(32, KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
 #define KVM_REQ_UPDATE_PROTECTED_GUEST_STATE \
-	KVM_ARCH_REQ_FLAGS(34, KVM_REQUEST_WAIT)
+	KVM_ARCH_REQ_FLAGS(34, KVM_REQUEST_WAIT | KVM_REQUEST_PER_PLANE)
 
 #define CR0_RESERVED_BITS                                               \
 	(~(unsigned long)(X86_CR0_PE | X86_CR0_MP | X86_CR0_EM | X86_CR0_TS \
@@ -794,6 +794,38 @@ enum kvm_only_cpuid_leafs {
 	NKVMCAPINTS = NR_KVM_CPU_CAPS - NCAPINTS,
 };
 
+struct kvm_vcpu_arch_common {
+	/* CPUID related state */
+	int cpuid_nent;
+	struct kvm_cpuid_entry2 *cpuid_entries;
+	bool cpuid_dynamic_bits_dirty;
+	bool is_amd_compatible;
+
+	void *pio_data;
+
+	/*
+	 * cpu_caps holds the effective guest capabilities, i.e. the features
+	 * the vCPU is allowed to use.  Typically, but not always, features can
+	 * be used by the guest if and only if both KVM and userspace want to
+	 * expose the feature to the guest.
+	 *
+	 * A common exception is for virtualization holes, i.e. when KVM can't
+	 * prevent the guest from using a feature, in which case the vCPU "has"
+	 * the feature regardless of what KVM or userspace desires.
+	 *
+	 * Note, features that don't require KVM involvement in any way are
+	 * NOT enforced/sanitized by KVM, i.e. are taken verbatim from the
+	 * guest CPUID provided by userspace.
+	 */
+	u32 cpu_caps[NR_KVM_CPU_CAPS];
+
+	/* Cache configuration state */
+	struct kvm_mtrr mtrr_state;
+};
+
+int kvm_arch_vcpu_common_init(struct kvm_vcpu_common *common);
+void kvm_arch_vcpu_common_destroy(struct kvm_vcpu_common *common);
+
 struct kvm_vcpu_arch {
 	/*
 	 * rip and regs accesses must go through
@@ -914,27 +946,6 @@ struct kvm_vcpu_arch {
 
 	int halt_request; /* real mode on Intel only */
 
-	int cpuid_nent;
-	struct kvm_cpuid_entry2 *cpuid_entries;
-	bool cpuid_dynamic_bits_dirty;
-	bool is_amd_compatible;
-
-	/*
-	 * cpu_caps holds the effective guest capabilities, i.e. the features
-	 * the vCPU is allowed to use.  Typically, but not always, features can
-	 * be used by the guest if and only if both KVM and userspace want to
-	 * expose the feature to the guest.
-	 *
-	 * A common exception is for virtualization holes, i.e. when KVM can't
-	 * prevent the guest from using a feature, in which case the vCPU "has"
-	 * the feature regardless of what KVM or userspace desires.
-	 *
-	 * Note, features that don't require KVM involvement in any way are
-	 * NOT enforced/sanitized by KVM, i.e. are taken verbatim from the
-	 * guest CPUID provided by userspace.
-	 */
-	u32 cpu_caps[NR_KVM_CPU_CAPS];
-
 	u64 reserved_gpa_bits;
 	int maxphyaddr;
 
@@ -987,7 +998,6 @@ struct kvm_vcpu_arch {
 	bool smi_pending;    /* SMI queued after currently running handler */
 	u8 handling_intr_from_guest;
 
-	struct kvm_mtrr mtrr_state;
 	u64 pat;
 
 	unsigned switch_db_regs;
@@ -1412,6 +1422,19 @@ enum kvm_mmu_type {
 	KVM_NR_MMU_TYPES,
 };
 
+/* Per-plane state of VM */
+struct kvm_arch_plane {
+	atomic_t vapics_in_nmi_mode;
+
+	struct mutex apic_map_lock;
+	struct kvm_apic_map __rcu *apic_map;
+	atomic_t apic_map_dirty;
+};
+
+int kvm_arch_plane_init(struct kvm *kvm, struct kvm_plane *plane,
+			unsigned plane_level);
+void kvm_arch_plane_destroy(struct kvm_plane *plane);
+
 struct kvm_arch {
 	unsigned long n_used_mmu_pages;
 	unsigned long n_requested_mmu_pages;
@@ -1448,11 +1471,6 @@ struct kvm_arch {
 	struct kvm_ioapic *vioapic;
 	struct kvm_pit *vpit;
 #endif
-	atomic_t vapics_in_nmi_mode;
-
-	struct mutex apic_map_lock;
-	struct kvm_apic_map __rcu *apic_map;
-	atomic_t apic_map_dirty;
 
 	bool apic_access_memslot_enabled;
 	bool apic_access_memslot_inhibited;
@@ -1861,6 +1879,7 @@ struct kvm_x86_ops {
 	void (*cancel_injection)(struct kvm_vcpu *vcpu);
 	int (*interrupt_allowed)(struct kvm_vcpu *vcpu, bool for_injection);
 	int (*nmi_allowed)(struct kvm_vcpu *vcpu, bool for_injection);
+	int (*mce_allowed)(struct kvm_vcpu *vcpu);
 	bool (*get_nmi_mask)(struct kvm_vcpu *vcpu);
 	void (*set_nmi_mask)(struct kvm_vcpu *vcpu, bool masked);
 	/* Whether or not a virtual NMI is pending in hardware. */
@@ -1994,6 +2013,11 @@ struct kvm_x86_ops {
 	int (*gmem_prepare)(struct kvm *kvm, kvm_pfn_t pfn, gfn_t gfn, int max_order);
 	void (*gmem_invalidate)(kvm_pfn_t start, kvm_pfn_t end);
 	int (*gmem_max_mapping_level)(struct kvm *kvm, kvm_pfn_t pfn, bool is_private);
+
+	struct kvm_plane *(*alloc_plane)(void);
+	void (*free_plane)(struct kvm_plane *);
+
+	unsigned (*max_planes)(struct kvm *);
 };
 
 struct kvm_x86_nested_ops {
@@ -2440,7 +2464,7 @@ int kvm_cpu_get_extint(struct kvm_vcpu *v);
 int kvm_cpu_get_interrupt(struct kvm_vcpu *v);
 void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event);
 
-int kvm_pv_send_ipi(struct kvm *kvm, unsigned long ipi_bitmap_low,
+int kvm_pv_send_ipi(struct kvm_vcpu *kvm_vcpu, unsigned long ipi_bitmap_low,
 		    unsigned long ipi_bitmap_high, u32 min,
 		    unsigned long icr, int op_64_bit);
 

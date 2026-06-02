@@ -311,7 +311,7 @@ static int kvm_pre_enter_guest(struct kvm_vcpu *vcpu)
 		kvm_deliver_intr(vcpu);
 		kvm_deliver_exception(vcpu);
 		/* Make sure the vcpu mode has been written */
-		smp_store_mb(vcpu->mode, IN_GUEST_MODE);
+		kvm_vcpu_set_mode_mb(vcpu, IN_GUEST_MODE);
 		kvm_check_vpid(vcpu);
 
 		/*
@@ -329,7 +329,7 @@ static int kvm_pre_enter_guest(struct kvm_vcpu *vcpu)
 				kvm_make_request(KVM_REQ_PMU, vcpu);
 			}
 			/* make sure the vcpu mode has been written */
-			smp_store_mb(vcpu->mode, OUTSIDE_GUEST_MODE);
+			kvm_vcpu_set_mode_mb(vcpu, OUTSIDE_GUEST_MODE);
 			local_irq_enable();
 			ret = -EAGAIN;
 		}
@@ -348,7 +348,7 @@ static int kvm_handle_exit(struct kvm_run *run, struct kvm_vcpu *vcpu)
 	u32 intr = estat & CSR_ESTAT_IS;
 	u32 ecode = (estat & CSR_ESTAT_EXC) >> CSR_ESTAT_EXC_SHIFT;
 
-	vcpu->mode = OUTSIDE_GUEST_MODE;
+	kvm_vcpu_set_mode(vcpu, OUTSIDE_GUEST_MODE);
 
 	/* Set a default exit reason */
 	run->exit_reason = KVM_EXIT_UNKNOWN;
@@ -1847,7 +1847,8 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 	int cpu, idx;
 	unsigned long flags;
 
-	if (vcpu->preempted && kvm_guest_has_pv_feature(vcpu, KVM_FEATURE_PREEMPT)) {
+	if (kvm_vcpu_preempted(vcpu) &&
+	    kvm_guest_has_pv_feature(vcpu, KVM_FEATURE_PREEMPT)) {
 		/*
 		 * Take the srcu lock as memslots will be accessed to check
 		 * the gfn cache generation against the memslots generation.
@@ -1887,7 +1888,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		break;
 	}
 
-	if (!vcpu->wants_to_run)
+	if (!kvm_vcpu_wants_to_run(vcpu))
 		return r;
 
 	/* Clear exit_reason */

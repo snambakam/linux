@@ -36,14 +36,18 @@ struct kvm_cpuid_entry2 *kvm_find_cpuid_entry2(struct kvm_cpuid_entry2 *entries,
 static inline struct kvm_cpuid_entry2 *kvm_find_cpuid_entry_index(struct kvm_vcpu *vcpu,
 								  u32 function, u32 index)
 {
-	return kvm_find_cpuid_entry2(vcpu->arch.cpuid_entries, vcpu->arch.cpuid_nent,
+	struct kvm_vcpu_common *common = vcpu->common;
+
+	return kvm_find_cpuid_entry2(common->arch.cpuid_entries, common->arch.cpuid_nent,
 				     function, index);
 }
 
 static inline struct kvm_cpuid_entry2 *kvm_find_cpuid_entry(struct kvm_vcpu *vcpu,
 							    u32 function)
 {
-	return kvm_find_cpuid_entry2(vcpu->arch.cpuid_entries, vcpu->arch.cpuid_nent,
+	struct kvm_vcpu_common *common = vcpu->common;
+
+	return kvm_find_cpuid_entry2(common->arch.cpuid_entries, common->arch.cpuid_nent,
 				     function, KVM_CPUID_INDEX_NOT_SIGNIFICANT);
 }
 
@@ -135,7 +139,7 @@ static __always_inline bool guest_cpuid_has(struct kvm_vcpu *vcpu,
 
 static inline bool guest_cpuid_is_amd_compatible(struct kvm_vcpu *vcpu)
 {
-	return vcpu->arch.is_amd_compatible;
+	return vcpu->common->arch.is_amd_compatible;
 }
 
 static inline bool guest_cpuid_is_intel_compatible(struct kvm_vcpu *vcpu)
@@ -235,36 +239,37 @@ static __always_inline bool guest_pv_has(struct kvm_vcpu *vcpu,
 	return vcpu->arch.pv_cpuid.features & (1u << kvm_feature);
 }
 
-static __always_inline void guest_cpu_cap_set(struct kvm_vcpu *vcpu,
+static __always_inline void guest_cpu_cap_set(struct kvm_vcpu_common *common,
 					      unsigned int x86_feature)
 {
 	unsigned int x86_leaf = __feature_leaf(x86_feature);
 
-	vcpu->arch.cpu_caps[x86_leaf] |= __feature_bit(x86_feature);
+	common->arch.cpu_caps[x86_leaf] |= __feature_bit(x86_feature);
 }
 
-static __always_inline void guest_cpu_cap_clear(struct kvm_vcpu *vcpu,
+static __always_inline void guest_cpu_cap_clear(struct kvm_vcpu_common *common,
 						unsigned int x86_feature)
 {
 	unsigned int x86_leaf = __feature_leaf(x86_feature);
 
-	vcpu->arch.cpu_caps[x86_leaf] &= ~__feature_bit(x86_feature);
+	common->arch.cpu_caps[x86_leaf] &= ~__feature_bit(x86_feature);
 }
 
-static __always_inline void guest_cpu_cap_change(struct kvm_vcpu *vcpu,
+static __always_inline void guest_cpu_cap_change(struct kvm_vcpu_common *common,
 						 unsigned int x86_feature,
 						 bool guest_has_cap)
 {
 	if (guest_has_cap)
-		guest_cpu_cap_set(vcpu, x86_feature);
+		guest_cpu_cap_set(common, x86_feature);
 	else
-		guest_cpu_cap_clear(vcpu, x86_feature);
+		guest_cpu_cap_clear(common, x86_feature);
 }
 
 static __always_inline bool guest_cpu_cap_has(struct kvm_vcpu *vcpu,
 					      unsigned int x86_feature)
 {
 	unsigned int x86_leaf = __feature_leaf(x86_feature);
+	struct kvm_vcpu_common *common = vcpu->common;
 
 	/*
 	 * Except for MWAIT, querying dynamic feature bits is disallowed, so
@@ -274,7 +279,7 @@ static __always_inline bool guest_cpu_cap_has(struct kvm_vcpu *vcpu,
 		     x86_feature == X86_FEATURE_OSXSAVE ||
 		     x86_feature == X86_FEATURE_OSPKE);
 
-	return vcpu->arch.cpu_caps[x86_leaf] & __feature_bit(x86_feature);
+	return common->arch.cpu_caps[x86_leaf] & __feature_bit(x86_feature);
 }
 
 static inline bool kvm_vcpu_is_legal_cr3(struct kvm_vcpu *vcpu, unsigned long cr3)
@@ -300,4 +305,8 @@ static inline bool guest_has_pred_cmd_msr(struct kvm_vcpu *vcpu)
 		guest_cpu_cap_has(vcpu, X86_FEATURE_SBPB));
 }
 
+static inline void cpuid_set_dirty(struct kvm_vcpu *vcpu)
+{
+	vcpu->common->arch.cpuid_dynamic_bits_dirty = true;
+}
 #endif

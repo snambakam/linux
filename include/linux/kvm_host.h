@@ -159,6 +159,7 @@ static inline bool kvm_is_error_gpa(gpa_t gpa)
 #define KVM_REQUEST_NO_WAKEUP      BIT(8)
 #define KVM_REQUEST_WAIT           BIT(9)
 #define KVM_REQUEST_NO_ACTION      BIT(10)
+#define KVM_REQUEST_PER_PLANE      BIT(11)
 /*
  * Architecture-independent vcpu->requests bit members
  * Bits 3-7 are reserved for more arch-independent bits.
@@ -167,6 +168,7 @@ static inline bool kvm_is_error_gpa(gpa_t gpa)
 #define KVM_REQ_VM_DEAD			(1 | KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
 #define KVM_REQ_UNBLOCK			2
 #define KVM_REQ_DIRTY_RING_SOFT_FULL	3
+#define KVM_REQ_PLANE_RESCHED		4
 #define KVM_REQUEST_ARCH_BASE		8
 
 /*
@@ -180,10 +182,11 @@ static inline bool kvm_is_error_gpa(gpa_t gpa)
 #define KVM_REQ_OUTSIDE_GUEST_MODE	(KVM_REQUEST_NO_ACTION | KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
 
 #define KVM_ARCH_REQ_FLAGS(nr, flags) ({ \
-	BUILD_BUG_ON((unsigned)(nr) >= (sizeof_field(struct kvm_vcpu, requests) * 8) - KVM_REQUEST_ARCH_BASE); \
+	BUILD_BUG_ON((unsigned)(nr) >= (sizeof_field(struct kvm_vcpu_common, requests) * 8) - KVM_REQUEST_ARCH_BASE); \
 	(unsigned)(((nr) + KVM_REQUEST_ARCH_BASE) | (flags)); \
 })
 #define KVM_ARCH_REQ(nr)           KVM_ARCH_REQ_FLAGS(nr, 0)
+#define KVM_ARCH_PLANE_REQ(nr)     KVM_ARCH_REQ_FLAGS(nr, KVM_REQUEST_PER_PLANE)
 
 bool kvm_make_vcpus_request_mask(struct kvm *kvm, unsigned int req,
 				 unsigned long *vcpu_bitmap);
@@ -322,33 +325,96 @@ struct kvm_mmio_fragment {
 	unsigned int len;
 };
 
-struct kvm_vcpu {
+
+
+struct kvm_vcpu_common {
 	struct kvm *kvm;
-#ifdef CONFIG_PREEMPT_NOTIFIERS
-	struct preempt_notifier preempt_notifier;
-#endif
-	int cpu;
-	int vcpu_id; /* id given by userspace at creation */
-	int vcpu_idx; /* index into kvm->vcpu_array */
+
+	/* kvm_run struct shared across all planes */
+	struct kvm_run *run;
+
+	int vcpu_idx; /* index into kvm->planes[]->vcpu_array */
+
+	/* Currently active VCPU */
+	struct kvm_vcpu *current_vcpu;
+
+	struct kvm_vcpu *vcpus[KVM_MAX_PLANES];
+
+	/* Locks */
 	int ____srcu_idx; /* Don't use this directly.  You've been warned. */
 #ifdef CONFIG_PROVE_RCU
 	int srcu_depth;
 #endif
-	int mode;
-	u64 requests;
-	unsigned long guest_debug;
-
 	struct mutex mutex;
-	struct kvm_run *run;
 
 #ifndef __KVM_HAVE_ARCH_WQP
 	struct rcuwait wait;
 #endif
+
+	int mode;
+	u64 requests;
+
 	struct pid *pid;
 	rwlock_t pid_lock;
 	int sigset_active;
 	sigset_t sigset;
 	unsigned int halt_poll_ns;
+
+#ifdef CONFIG_HAVE_KVM_CPU_RELAX_INTERCEPT
+	/*
+	 * Cpu relax intercept or pause loop exit optimization
+	 * in_spin_loop: set when a vcpu does a pause loop exit
+	 *  or cpu relax intercepted.
+	 * dy_eligible: indicates whether vcpu is eligible for directed yield.
+	 */
+	struct {
+		bool in_spin_loop;
+		bool dy_eligible;
+	} spin_loop;
+#endif
+
+	/* Scheduling state */
+#ifdef CONFIG_PREEMPT_NOTIFIERS
+	struct preempt_notifier preempt_notifier;
+#endif
+	bool wants_to_run;
+	bool preempted;
+	bool ready;
+	bool scheduled_out;
+
+	struct kvm_dirty_ring dirty_ring;
+
+	bool plane_switch;
+
+	struct kvm_vcpu_arch_common arch;
+};
+
+#define vcpu_for_each_plane(common, i, v)			\
+	for ((i) = 0; (i) < KVM_MAX_PLANES; ++(i))		\
+		if (((v) = common->vcpus[(i)]) != NULL)
+
+/* Tracked per plane-VCPU - used for deciding which plane-vcpu to run */
+enum kvm_vcpu_state {
+	STOPPED,
+	RUNNABLE,
+};
+
+struct kvm_vcpu {
+	struct kvm *kvm;
+	struct kvm_plane *plane;
+
+	int cpu;
+	int vcpu_id; /* id given by userspace at creation */
+	int vcpu_idx; /* index into kvm->planes[]->vcpu_array */
+
+	unsigned long guest_debug;
+
+	struct kvm_run *run;
+
+	u64 plane_requests;
+	enum kvm_vcpu_state plane_state;
+
+	/* S390 only */
 	bool valid_wakeup;
 
 #ifdef CONFIG_HAS_IOMEM
@@ -369,26 +435,9 @@ struct kvm_vcpu {
 	} async_pf;
 #endif
 
-#ifdef CONFIG_HAVE_KVM_CPU_RELAX_INTERCEPT
-	/*
-	 * Cpu relax intercept or pause loop exit optimization
-	 * in_spin_loop: set when a vcpu does a pause loop exit
-	 *  or cpu relax intercepted.
-	 * dy_eligible: indicates whether vcpu is eligible for directed yield.
-	 */
-	struct {
-		bool in_spin_loop;
-		bool dy_eligible;
-	} spin_loop;
-#endif
-	bool wants_to_run;
-	bool preempted;
-	bool ready;
-	bool scheduled_out;
 	struct kvm_vcpu_arch arch;
 	struct kvm_vcpu_stat stat;
 	char stats_id[KVM_STATS_NAME_SIZE];
-	struct kvm_dirty_ring dirty_ring;
 
 	/*
 	 * The most recently used memslot by this vCPU and the slots generation
@@ -398,7 +447,59 @@ struct kvm_vcpu {
 	 */
 	struct kvm_memory_slot *last_used_slot;
 	u64 last_used_slot_gen;
+
+	struct kvm_vcpu_common *common;
+	unsigned plane_level;
 };
+
+void kvm_vcpu_set_plane_runnable(struct kvm_vcpu *vcpu);
+void kvm_vcpu_set_plane_stopped(struct kvm_vcpu *vcpu);
+struct kvm_vcpu *kvm_vcpu_select_plane(struct kvm_vcpu *vcpu);
+
+static inline bool kvm_vcpu_wants_to_run(struct kvm_vcpu *vcpu)
+{
+	return vcpu->common->wants_to_run;
+}
+
+static inline bool kvm_vcpu_preempted(struct kvm_vcpu *vcpu)
+{
+	return READ_ONCE(vcpu->common->preempted);
+}
+
+static inline bool kvm_vcpu_ready(struct kvm_vcpu *vcpu)
+{
+	return READ_ONCE(vcpu->common->ready);
+}
+
+static inline bool kvm_vcpu_scheduled_out(struct kvm_vcpu *vcpu)
+{
+	return vcpu->common->scheduled_out;
+}
+
+static inline int kvm_vcpu_mode(struct kvm_vcpu *vcpu)
+{
+	return vcpu->common->mode;
+}
+
+static inline int kvm_vcpu_mode_acquire(struct kvm_vcpu *vcpu)
+{
+	return smp_load_acquire(&vcpu->common->mode);
+}
+
+static inline void kvm_vcpu_set_mode(struct kvm_vcpu *vcpu, int mode)
+{
+	vcpu->common->mode = mode;
+}
+
+static inline void kvm_vcpu_set_mode_mb(struct kvm_vcpu *vcpu, int mode)
+{
+	smp_store_mb(vcpu->common->mode, mode);
+}
+
+static inline void kvm_vcpu_set_mode_release(struct kvm_vcpu *vcpu, int mode)
+{
+	smp_store_release(&vcpu->common->mode, mode);
+}
 
 /*
  * Start accounting time towards a guest.
@@ -565,7 +666,7 @@ static inline int kvm_vcpu_exiting_guest_mode(struct kvm_vcpu *vcpu)
 	 * memory barrier following the write of vcpu->mode in VCPU RUN.
 	 */
 	smp_mb__before_atomic();
-	return cmpxchg(&vcpu->mode, IN_GUEST_MODE, EXITING_GUEST_MODE);
+	return cmpxchg(&vcpu->common->mode, IN_GUEST_MODE, EXITING_GUEST_MODE);
 }
 
 /*
@@ -681,6 +782,7 @@ struct kvm_kernel_irq_routing_entry {
 			u32 data;
 			u32 flags;
 			u32 devid;
+			unsigned plane_level;
 		} msi;
 		struct kvm_s390_adapter_int adapter;
 		struct kvm_hv_sint hv_sint;
@@ -767,6 +869,16 @@ struct kvm_memslots {
 	int node_idx;
 };
 
+struct kvm_plane {
+	struct kvm *kvm;
+	unsigned level;
+
+	/* Per-Plane VCPU array */
+	struct xarray vcpu_array;
+
+	struct kvm_arch_plane arch;
+};
+
 struct kvm {
 #ifdef KVM_HAVE_MMU_RWLOCK
 	rwlock_t mmu_lock;
@@ -790,7 +902,6 @@ struct kvm {
 	struct kvm_memslots __memslots[KVM_MAX_NR_ADDRESS_SPACES][2];
 	/* The current active memslot set for each address space */
 	struct kvm_memslots __rcu *memslots[KVM_MAX_NR_ADDRESS_SPACES];
-	struct xarray vcpu_array;
 	/*
 	 * Protected by slots_lock, but can be read outside if an
 	 * incorrect answer is acceptable.
@@ -805,6 +916,9 @@ struct kvm {
 	/* For management / invalidation of gfn_to_pfn_caches */
 	spinlock_t gpc_lock;
 	struct list_head gpc_list;
+
+	struct kvm_plane *planes[KVM_MAX_PLANES];
+	bool has_planes;
 
 	/*
 	 * created_vcpus is protected by kvm->lock, and is incremented
@@ -954,22 +1068,37 @@ static inline void kvm_vm_bugged(struct kvm *kvm)
 	unlikely(__ret);					\
 })
 
+static inline void kvm_vcpu_lock(struct kvm_vcpu *vcpu)
+{
+	mutex_lock(&vcpu->common->mutex);
+}
+
+static inline void kvm_vcpu_unlock(struct kvm_vcpu *vcpu)
+{
+	mutex_unlock(&vcpu->common->mutex);
+}
+
+static inline struct mutex *kvm_vcpu_mutex(struct kvm_vcpu *vcpu)
+{
+	return &vcpu->common->mutex;
+}
+
 static inline void kvm_vcpu_srcu_read_lock(struct kvm_vcpu *vcpu)
 {
 #ifdef CONFIG_PROVE_RCU
-	WARN_ONCE(vcpu->srcu_depth++,
-		  "KVM: Illegal vCPU srcu_idx LOCK, depth=%d", vcpu->srcu_depth - 1);
+	WARN_ONCE(vcpu->common->srcu_depth++,
+		  "KVM: Illegal vCPU srcu_idx LOCK, depth=%d", vcpu->common->srcu_depth - 1);
 #endif
-	vcpu->____srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
+	vcpu->common->____srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
 }
 
 static inline void kvm_vcpu_srcu_read_unlock(struct kvm_vcpu *vcpu)
 {
-	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->____srcu_idx);
+	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->common->____srcu_idx);
 
 #ifdef CONFIG_PROVE_RCU
-	WARN_ONCE(--vcpu->srcu_depth,
-		  "KVM: Illegal vCPU srcu_idx UNLOCK, depth=%d", vcpu->srcu_depth);
+	WARN_ONCE(--vcpu->common->srcu_depth,
+		  "KVM: Illegal vCPU srcu_idx UNLOCK, depth=%d", vcpu->common->srcu_depth);
 #endif
 }
 
@@ -989,9 +1118,9 @@ static inline struct kvm_io_bus *kvm_get_bus(struct kvm *kvm, enum kvm_bus idx)
 					 lockdep_is_held(&kvm->slots_lock));
 }
 
-static inline struct kvm_vcpu *kvm_get_vcpu(struct kvm *kvm, int i)
+static inline struct kvm_vcpu *plane_get_vcpu(struct kvm_plane *plane, int i)
 {
-	int num_vcpus = atomic_read(&kvm->online_vcpus);
+	int num_vcpus = atomic_read(&plane->kvm->online_vcpus);
 
 	/*
 	 * Explicitly verify the target vCPU is online, as the anti-speculation
@@ -1005,15 +1134,23 @@ static inline struct kvm_vcpu *kvm_get_vcpu(struct kvm *kvm, int i)
 
 	/* Pairs with smp_wmb() in kvm_vm_ioctl_create_vcpu.  */
 	smp_rmb();
-	return xa_load(&kvm->vcpu_array, i);
+	return xa_load(&plane->vcpu_array, i);
 }
 
-#define kvm_for_each_vcpu(idx, vcpup, kvm)				\
-	if (atomic_read(&kvm->online_vcpus))				\
-		xa_for_each_range(&kvm->vcpu_array, idx, vcpup, 0,	\
-				  (atomic_read(&kvm->online_vcpus) - 1))
+static inline struct kvm_vcpu *kvm_get_vcpu(struct kvm *kvm, int i)
+{
+	return plane_get_vcpu(kvm->planes[0], i);
+}
 
-static inline struct kvm_vcpu *kvm_get_vcpu_by_id(struct kvm *kvm, int id)
+#define plane_for_each_vcpu(idx, vcpup, plane)					\
+	if (atomic_read(&plane->kvm->online_vcpus))				\
+		xa_for_each_range(&plane->vcpu_array, idx, vcpup, 0,		\
+				  (atomic_read(&plane->kvm->online_vcpus) - 1))
+
+#define kvm_for_each_vcpu(idx, vcpup, kvm)					\
+	plane_for_each_vcpu(idx, vcpup, kvm->planes[0])
+
+static inline struct kvm_vcpu *plane_get_vcpu_by_id(struct kvm_plane *plane, int id)
 {
 	struct kvm_vcpu *vcpu = NULL;
 	unsigned long i;
@@ -1021,13 +1158,18 @@ static inline struct kvm_vcpu *kvm_get_vcpu_by_id(struct kvm *kvm, int id)
 	if (id < 0)
 		return NULL;
 	if (id < KVM_MAX_VCPUS)
-		vcpu = kvm_get_vcpu(kvm, id);
+		vcpu = plane_get_vcpu(plane, id);
 	if (vcpu && vcpu->vcpu_id == id)
 		return vcpu;
-	kvm_for_each_vcpu(i, vcpu, kvm)
+	plane_for_each_vcpu(i, vcpu, plane)
 		if (vcpu->vcpu_id == id)
 			return vcpu;
 	return NULL;
+}
+
+static inline struct kvm_vcpu *kvm_get_vcpu_by_id(struct kvm *kvm, int id)
+{
+	return plane_get_vcpu_by_id(kvm->planes[0], id);
 }
 
 static inline bool kvm_is_vcpu_creation_in_progress(struct kvm *kvm)
@@ -1045,6 +1187,10 @@ void kvm_unlock_all_vcpus(struct kvm *kvm);
 
 void vcpu_load(struct kvm_vcpu *vcpu);
 void vcpu_put(struct kvm_vcpu *vcpu);
+
+unsigned kvm_arch_max_planes(struct kvm *kvm);
+struct kvm_plane *kvm_alloc_plane(void);
+void kvm_free_plane(struct kvm_plane *plane);
 
 #ifdef CONFIG_KVM_IOAPIC
 void kvm_arch_post_irq_ack_notifier_list_update(struct kvm *kvm);
@@ -1537,6 +1683,8 @@ void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu);
 bool kvm_vcpu_wake_up(struct kvm_vcpu *vcpu);
 
+int kvm_request_create_plane(struct kvm_vcpu *vcpu, unsigned plane, u64 apic_id);
+
 #ifndef CONFIG_S390
 void __kvm_vcpu_kick(struct kvm_vcpu *vcpu, bool wait);
 
@@ -1735,7 +1883,7 @@ static inline struct rcuwait *kvm_arch_vcpu_get_wait(struct kvm_vcpu *vcpu)
 #ifdef __KVM_HAVE_ARCH_WQP
 	return vcpu->arch.waitp;
 #else
-	return &vcpu->wait;
+	return &vcpu->common->wait;
 #endif
 }
 
@@ -2203,11 +2351,13 @@ bool kvm_arch_can_set_irq_routing(struct kvm *kvm);
 int kvm_set_irq_routing(struct kvm *kvm,
 			const struct kvm_irq_routing_entry *entries,
 			unsigned nr,
-			unsigned flags);
+			unsigned flags,
+			unsigned plane_level);
 int kvm_init_irq_routing(struct kvm *kvm);
 int kvm_set_routing_entry(struct kvm *kvm,
 			  struct kvm_kernel_irq_routing_entry *e,
-			  const struct kvm_irq_routing_entry *ue);
+			  const struct kvm_irq_routing_entry *ue,
+			  unsigned plane_level);
 void kvm_free_irq_routing(struct kvm *kvm);
 
 #else
@@ -2221,7 +2371,7 @@ static inline int kvm_init_irq_routing(struct kvm *kvm)
 
 #endif
 
-int kvm_send_userspace_msi(struct kvm *kvm, struct kvm_msi *msi);
+int kvm_send_userspace_msi(struct kvm *kvm, struct kvm_msi *msi, unsigned plane_level);
 
 void kvm_eventfd_init(struct kvm *kvm);
 int kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args);
@@ -2258,7 +2408,10 @@ static inline void __kvm_make_request(int req, struct kvm_vcpu *vcpu)
 	 * caller.  Paired with the smp_mb__after_atomic in kvm_check_request.
 	 */
 	smp_wmb();
-	set_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->requests);
+	if (req & KVM_REQUEST_PER_PLANE)
+		set_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->plane_requests);
+	else
+		set_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->common->requests);
 }
 
 static __always_inline void kvm_make_request(int req, struct kvm_vcpu *vcpu)
@@ -2284,17 +2437,23 @@ static inline void kvm_make_request_and_kick(int req, struct kvm_vcpu *vcpu)
 
 static inline bool kvm_request_pending(struct kvm_vcpu *vcpu)
 {
-	return READ_ONCE(vcpu->requests);
+	return READ_ONCE(vcpu->common->requests) || READ_ONCE(vcpu->plane_requests);
 }
 
 static inline bool kvm_test_request(int req, struct kvm_vcpu *vcpu)
 {
-	return test_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->requests);
+	if (req & KVM_REQUEST_PER_PLANE)
+		return test_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->plane_requests);
+	else
+		return test_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->common->requests);
 }
 
 static inline void kvm_clear_request(int req, struct kvm_vcpu *vcpu)
 {
-	clear_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->requests);
+	if (req & KVM_REQUEST_PER_PLANE)
+		clear_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->plane_requests);
+	else
+		clear_bit(req & KVM_REQUEST_MASK, (void *)&vcpu->common->requests);
 }
 
 static inline bool kvm_check_request(int req, struct kvm_vcpu *vcpu)
@@ -2386,11 +2545,11 @@ extern struct kvm_device_ops kvm_arm_vgic_v5_ops;
 
 static inline void kvm_vcpu_set_in_spin_loop(struct kvm_vcpu *vcpu, bool val)
 {
-	vcpu->spin_loop.in_spin_loop = val;
+	vcpu->common->spin_loop.in_spin_loop = val;
 }
 static inline void kvm_vcpu_set_dy_eligible(struct kvm_vcpu *vcpu, bool val)
 {
-	vcpu->spin_loop.dy_eligible = val;
+	vcpu->common->spin_loop.dy_eligible = val;
 }
 
 #else /* !CONFIG_HAVE_KVM_CPU_RELAX_INTERCEPT */
@@ -2411,7 +2570,7 @@ static inline bool kvm_is_visible_memslot(struct kvm_memory_slot *memslot)
 }
 
 struct kvm_vcpu *kvm_get_running_vcpu(void);
-struct kvm_vcpu * __percpu *kvm_get_running_vcpus(void);
+struct kvm_vcpu_common * __percpu *kvm_get_running_vcpus(void);
 
 #if IS_ENABLED(CONFIG_HAVE_KVM_IRQ_BYPASS)
 struct kvm_kernel_irqfd;

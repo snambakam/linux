@@ -115,6 +115,24 @@ int kvm_arch_vcpu_runnable(struct kvm_vcpu *vcpu)
 	return !!(vcpu->arch.pending_exceptions);
 }
 
+unsigned kvm_arch_max_planes(struct kvm *kvm)
+{
+	return 1;
+}
+
+struct kvm_plane *kvm_alloc_plane(void)
+{
+	/* For better type checking, do not return kzalloc() value directly */
+	struct kvm_plane *plane = kzalloc(sizeof(*plane), GFP_KERNEL_ACCOUNT);
+
+	return plane;
+}
+
+void kvm_free_plane(struct kvm_plane *plane)
+{
+	kfree(plane);
+}
+
 bool kvm_arch_vcpu_in_kernel(struct kvm_vcpu *vcpu)
 {
 	return false;
@@ -265,7 +283,7 @@ static enum hrtimer_restart kvm_mips_comparecount_wakeup(struct hrtimer *timer)
 	kvm_mips_callbacks->queue_timer_int(vcpu);
 
 	vcpu->arch.wait = 0;
-	rcuwait_wake_up(&vcpu->wait);
+	rcuwait_wake_up(kvm_arch_vcpu_get_wait(vcpu));
 
 	return kvm_mips_count_timeout(vcpu);
 }
@@ -433,7 +451,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		vcpu->mmio_needed = 0;
 	}
 
-	if (!vcpu->wants_to_run)
+	if (!kvm_vcpu_wants_to_run(vcpu))
 		goto out;
 
 	lose_fpu(1);
@@ -448,7 +466,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	 * flush request while the requester sees the VCPU as outside of guest
 	 * mode and not needing an IPI.
 	 */
-	smp_store_mb(vcpu->mode, IN_GUEST_MODE);
+	kvm_vcpu_set_mode_mb(vcpu, IN_GUEST_MODE);
 
 	r = kvm_mips_vcpu_enter_exit(vcpu);
 
@@ -507,7 +525,7 @@ int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu,
 
 	dvcpu->arch.wait = 0;
 
-	rcuwait_wake_up(&dvcpu->wait);
+	rcuwait_wake_up(kvm_arch_vcpu_get_wait(dvcpu));
 
 	return 0;
 }
@@ -1175,7 +1193,7 @@ static int __kvm_mips_handle_exit(struct kvm_vcpu *vcpu)
 	u32 inst;
 	int ret = RESUME_GUEST;
 
-	vcpu->mode = OUTSIDE_GUEST_MODE;
+	kvm_vcpu_set_mode(vcpu, OUTSIDE_GUEST_MODE);
 
 	/* Set a default exit reason */
 	run->exit_reason = KVM_EXIT_UNKNOWN;
@@ -1329,7 +1347,7 @@ static int __kvm_mips_handle_exit(struct kvm_vcpu *vcpu)
 		 * or we could miss a TLB flush request while the requester sees
 		 * the VCPU as outside of guest mode and not needing an IPI.
 		 */
-		smp_store_mb(vcpu->mode, IN_GUEST_MODE);
+		kvm_vcpu_set_mode_mb(vcpu, IN_GUEST_MODE);
 
 		kvm_mips_callbacks->vcpu_reenter(vcpu);
 

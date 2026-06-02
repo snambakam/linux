@@ -306,6 +306,18 @@ enum fgt_group_id {
 	__NR_FGT_GROUP_IDS__
 };
 
+/* Per-plane state of VM */
+struct kvm_arch_plane {};
+
+static inline int kvm_arch_plane_init(struct kvm *kvm,
+				      struct kvm_plane *plane,
+				      unsigned plane_level)
+{
+	return 0;
+}
+
+static inline void kvm_arch_plane_destroy(struct kvm_plane *plane) {}
+
 struct kvm_arch {
 	struct kvm_s2_mmu mmu;
 
@@ -857,6 +869,11 @@ struct vcpu_reset_state {
 
 struct vncr_tlb;
 
+struct kvm_vcpu_arch_common {};
+
+static inline int kvm_arch_vcpu_common_init(struct kvm_vcpu_common *common) { return 0; }
+static inline void kvm_arch_vcpu_common_destroy(struct kvm_vcpu_common *common) {}
+
 struct kvm_vcpu_arch {
 	struct kvm_cpu_context ctxt;
 
@@ -1270,7 +1287,7 @@ int __kvm_arm_vcpu_set_events(struct kvm_vcpu *vcpu,
 void kvm_arm_halt_guest(struct kvm *kvm);
 void kvm_arm_resume_guest(struct kvm *kvm);
 
-#define vcpu_has_run_once(vcpu)	(!!READ_ONCE((vcpu)->pid))
+#define vcpu_has_run_once(vcpu)	(!!READ_ONCE((vcpu)->common->pid))
 
 #ifndef __KVM_NVHE_HYPERVISOR__
 #define kvm_call_hyp_nvhe(f, ...)						\

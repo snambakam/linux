@@ -98,7 +98,7 @@ int kvmppc_prepare_to_enter(struct kvm_vcpu *vcpu)
 			break;
 		}
 
-		vcpu->mode = IN_GUEST_MODE;
+		kvm_vcpu_set_mode(vcpu, IN_GUEST_MODE);
 
 		/*
 		 * Reading vcpu->requests must happen after setting vcpu->mode,
@@ -497,6 +497,24 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 
 	/* drop the module reference */
 	module_put(kvm->arch.kvm_ops->owner);
+}
+
+unsigned kvm_arch_max_planes(struct kvm *kvm)
+{
+	return 1;
+}
+
+struct kvm_plane *kvm_alloc_plane(void)
+{
+	/* For better type checking, do not return kzalloc() value directly */
+	struct kvm_plane *plane = kzalloc(sizeof(*plane), GFP_KERNEL_ACCOUNT);
+
+	return plane;
+}
+
+void kvm_free_plane(struct kvm_plane *plane)
+{
+	kfree(plane);
 }
 
 int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
@@ -1840,7 +1858,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	kvm_sigset_activate(vcpu);
 
-	if (!vcpu->wants_to_run)
+	if (!kvm_vcpu_wants_to_run(vcpu))
 		r = -EINTR;
 	else
 		r = kvmppc_vcpu_run(vcpu);

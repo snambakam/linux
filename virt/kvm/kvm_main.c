@@ -113,7 +113,7 @@ LIST_HEAD(vm_list);
 static struct kmem_cache *kvm_vcpu_cache;
 
 static __read_mostly struct preempt_ops kvm_preempt_ops;
-static DEFINE_PER_CPU(struct kvm_vcpu *, kvm_running_vcpu);
+static DEFINE_PER_CPU(struct kvm_vcpu_common *, kvm_running_vcpu);
 
 static struct dentry *kvm_debugfs_dir;
 
@@ -165,8 +165,8 @@ void vcpu_load(struct kvm_vcpu *vcpu)
 {
 	int cpu = get_cpu();
 
-	__this_cpu_write(kvm_running_vcpu, vcpu);
-	preempt_notifier_register(&vcpu->preempt_notifier);
+	__this_cpu_write(kvm_running_vcpu, vcpu->common);
+	preempt_notifier_register(&vcpu->common->preempt_notifier);
 	kvm_arch_vcpu_load(vcpu, cpu);
 	put_cpu();
 }
@@ -176,7 +176,7 @@ void vcpu_put(struct kvm_vcpu *vcpu)
 {
 	preempt_disable();
 	kvm_arch_vcpu_put(vcpu);
-	preempt_notifier_unregister(&vcpu->preempt_notifier);
+	preempt_notifier_unregister(&vcpu->common->preempt_notifier);
 	__this_cpu_write(kvm_running_vcpu, NULL);
 	preempt_enable();
 }
@@ -438,24 +438,113 @@ void *kvm_mmu_memory_cache_alloc(struct kvm_mmu_memory_cache *mc)
 }
 #endif
 
-static void kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
+static int kvm_vcpu_init_common(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned long id)
 {
-	mutex_init(&vcpu->mutex);
-	vcpu->cpu = -1;
-	vcpu->kvm = kvm;
-	vcpu->vcpu_id = id;
-	vcpu->pid = NULL;
-	rwlock_init(&vcpu->pid_lock);
+	struct kvm_vcpu_common *common = kzalloc(sizeof(*common), GFP_KERNEL_ACCOUNT);
+	struct page *page;
+	int r;
+
+	/*
+	 * KVM tracks vCPU IDs as 'int', be kind to userspace and reject
+	 * too-large values instead of silently truncating.
+	 *
+	 * Ensure KVM_MAX_VCPU_IDS isn't pushed above INT_MAX without first
+	 * changing the storage type (at the very least, IDs should be tracked
+	 * as unsigned ints).
+	 */
+	BUILD_BUG_ON(KVM_MAX_VCPU_IDS > INT_MAX);
+	if (id >= KVM_MAX_VCPU_IDS)
+		return -EINVAL;
+
+	mutex_lock(&kvm->lock);
+	kvm->created_vcpus++;
+	mutex_unlock(&kvm->lock);
+
+	if (common == NULL) {
+		r = -ENOMEM;
+		goto out_drop_counter;
+	}
+
+	common->vcpu_idx = atomic_read(&kvm->online_vcpus);
+
+	BUILD_BUG_ON(sizeof(struct kvm_run) > PAGE_SIZE);
+	page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+	if (!page) {
+		r = -ENOMEM;
+		goto out_drop_counter;
+	}
+	common->run = page_address(page);
+
+	mutex_init(&common->mutex);
+
 #ifndef __KVM_HAVE_ARCH_WQP
-	rcuwait_init(&vcpu->wait);
+	rcuwait_init(&common->wait);
 #endif
-	kvm_async_pf_vcpu_init(vcpu);
+
+	common->kvm = kvm;
+	common->current_vcpu = vcpu;
+
+	common->pid = NULL;
+	rwlock_init(&common->pid_lock);
+
+	common->wants_to_run = false;
+	common->preempted = false;
+	common->ready = false;
+	preempt_notifier_init(&common->preempt_notifier, &kvm_preempt_ops);
+
+	if (kvm->dirty_ring_size) {
+		r = kvm_dirty_ring_alloc(kvm, &common->dirty_ring,
+					 id, kvm->dirty_ring_size);
+		if (r)
+			goto out_free_run;
+	}
+
+	r = kvm_arch_vcpu_common_init(common);
+	if (r)
+		goto out_free_dirty_ring;
+
+	vcpu->common = common;
 
 	kvm_vcpu_set_in_spin_loop(vcpu, false);
 	kvm_vcpu_set_dy_eligible(vcpu, false);
-	vcpu->preempted = false;
-	vcpu->ready = false;
-	preempt_notifier_init(&vcpu->preempt_notifier, &kvm_preempt_ops);
+
+	return 0;
+
+out_free_dirty_ring:
+	kvm_dirty_ring_free(&common->dirty_ring);
+out_free_run:
+	free_page((unsigned long)common->run);
+out_drop_counter:
+	mutex_lock(&kvm->lock);
+	kvm->created_vcpus--;
+	mutex_unlock(&kvm->lock);
+
+	kfree(common);
+
+	return r;
+}
+
+static void kvm_vcpu_finish_common(struct kvm_vcpu *vcpu)
+{
+	WARN_ON(vcpu->common->vcpus[vcpu->plane_level] != NULL);
+	vcpu->common->vcpus[vcpu->plane_level] = vcpu;
+	smp_wmb();
+	if (vcpu->plane_level == 0) {
+		/*
+		 * Pairs with smp_rmb() in kvm_get_vcpu.  Store the vcpu
+		 * pointer before kvm->online_vcpu's incremented value.
+		 */
+		atomic_inc(&vcpu->kvm->online_vcpus);
+	}
+}
+
+static void kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
+{
+	vcpu->cpu = -1;
+	vcpu->kvm = kvm;
+	vcpu->vcpu_id = id;
+	kvm_async_pf_vcpu_init(vcpu);
+
 	vcpu->last_used_slot = NULL;
 
 	/* Fill the stats id string for the vcpu */
@@ -463,30 +552,53 @@ static void kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
 		 task_pid_nr(current), id);
 }
 
-static void kvm_vcpu_destroy(struct kvm_vcpu *vcpu)
+static void kvm_vcpu_common_destroy(struct kvm_vcpu *vcpu)
 {
-	kvm_arch_vcpu_destroy(vcpu);
-	kvm_dirty_ring_free(&vcpu->dirty_ring);
+	struct kvm_vcpu_common *common = vcpu->common;
+	struct kvm *kvm = common->kvm;
+
+	vcpu->common = NULL;
+	vcpu->run = NULL;
+	common->vcpus[vcpu->plane_level] = NULL;
+
+	if (vcpu->plane_level != 0)
+	       return;
+
+	mutex_lock(&common->kvm->lock);
+	kvm->created_vcpus--;
+	mutex_unlock(&common->kvm->lock);
+
+	kvm_arch_vcpu_common_destroy(common);
 
 	/*
 	 * No need for rcu_read_lock as VCPU_RUN is the only place that changes
-	 * the vcpu->pid pointer, and at destruction time all file descriptors
+	 * the common->pid pointer, and at destruction time all file descriptors
 	 * are already gone.
 	 */
-	put_pid(vcpu->pid);
+	put_pid(common->pid);
+	kvm_dirty_ring_free(&common->dirty_ring);
+	free_page((unsigned long)common->run);
+	kfree(common);
+}
+
+static void kvm_vcpu_destroy(struct kvm_vcpu *vcpu)
+{
+	kvm_arch_vcpu_destroy(vcpu);
+
+	kvm_vcpu_common_destroy(vcpu);
 
 	free_page((unsigned long)vcpu->run);
 	kmem_cache_free(kvm_vcpu_cache, vcpu);
 }
 
-void kvm_destroy_vcpus(struct kvm *kvm)
+static void plane_destroy_vcpus(struct kvm_plane *plane)
 {
 	unsigned long i;
 	struct kvm_vcpu *vcpu;
 
-	kvm_for_each_vcpu(i, vcpu, kvm) {
+	plane_for_each_vcpu(i, vcpu, plane) {
 		kvm_vcpu_destroy(vcpu);
-		xa_erase(&kvm->vcpu_array, i);
+		xa_erase(&plane->vcpu_array, i);
 
 		/*
 		 * Assert that the vCPU isn't visible in any way, to ensure KVM
@@ -494,7 +606,22 @@ void kvm_destroy_vcpus(struct kvm *kvm)
 		 * in VM-wide request, e.g. to flush remote TLBs when tearing
 		 * down MMUs, or to mark the VM dead if a KVM_BUG_ON() fires.
 		 */
-		WARN_ON_ONCE(xa_load(&kvm->vcpu_array, i) || kvm_get_vcpu(kvm, i));
+		WARN_ON_ONCE(xa_load(&plane->vcpu_array, i) || plane_get_vcpu(plane, i));
+	}
+
+}
+
+void kvm_destroy_vcpus(struct kvm *kvm)
+{
+	unsigned lvl;
+
+	for (lvl = KVM_MAX_PLANES; lvl > 0; lvl--) {
+		struct kvm_plane *plane = kvm->planes[lvl - 1];
+
+		if (plane == NULL)
+			continue;
+
+		plane_destroy_vcpus(plane);
 	}
 
 	atomic_set(&kvm->online_vcpus, 0);
@@ -1095,6 +1222,49 @@ static inline struct kvm_io_bus *kvm_get_bus_for_destruction(struct kvm *kvm,
 static int kvm_enable_virtualization(void);
 static void kvm_disable_virtualization(void);
 
+static struct kvm_plane *kvm_create_plane(struct kvm *kvm, unsigned plane_level)
+{
+	struct kvm_plane *plane = kvm_alloc_plane();
+
+	if (!plane)
+		return NULL;
+
+	plane->kvm = kvm;
+	plane->level = plane_level;
+
+	xa_init(&plane->vcpu_array);
+
+	if (kvm_arch_plane_init(kvm, plane, plane_level))
+		goto out_free_plane;
+
+	kvm->planes[plane_level] = plane;
+
+	return plane;
+
+out_free_plane:
+	kvm_free_plane(plane);
+
+	return NULL;
+}
+
+static void kvm_destroy_one_plane(struct kvm_plane *plane)
+{
+	kvm_arch_plane_destroy(plane);
+	kvm_free_plane(plane);
+}
+
+static void kvm_destroy_planes(struct kvm *kvm)
+{
+	int i;
+
+	for (i = 0; i < KVM_MAX_PLANES; ++i) {
+		if (kvm->planes[i] == NULL)
+			continue;
+		kvm_destroy_one_plane(kvm->planes[i]);
+		kvm->planes[i] = NULL;
+	}
+}
+
 static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 {
 	struct kvm *kvm = kvm_arch_alloc_vm();
@@ -1114,7 +1284,6 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 	mutex_init(&kvm->slots_arch_lock);
 	spin_lock_init(&kvm->mn_invalidate_lock);
 	rcuwait_init(&kvm->mn_memslots_update_rcuwait);
-	xa_init(&kvm->vcpu_array);
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
 	xa_init(&kvm->mem_attr_array);
 #endif
@@ -1126,6 +1295,12 @@ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
 	kvm->max_vcpus = KVM_MAX_VCPUS;
 
 	BUILD_BUG_ON(KVM_MEM_SLOTS_NUM > SHRT_MAX);
+
+	/* Initialize planes array and allocate plane 0 */
+	if (kvm_create_plane(kvm, 0) == NULL) {
+		r = -ENOMEM;
+		goto out_no_planes;
+	}
 
 	/*
 	 * Force subsequent debugfs file creations to fail if the VM directory
@@ -1225,6 +1400,8 @@ out_err_no_irq_routing:
 out_err_no_irq_srcu:
 	cleanup_srcu_struct(&kvm->srcu);
 out_err_no_srcu:
+	kvm_destroy_planes(kvm);
+out_no_planes:
 	kvm_arch_free_vm(kvm);
 	mmdrop(current->mm);
 	return ERR_PTR(r);
@@ -1304,6 +1481,7 @@ static void kvm_destroy_vm(struct kvm *kvm)
 	xa_destroy(&kvm->mem_attr_array);
 #endif
 	kvm_arch_free_vm(kvm);
+	kvm_destroy_planes(kvm);
 	preempt_notifier_dec();
 	kvm_disable_virtualization();
 	mmdrop(mm);
@@ -1363,7 +1541,7 @@ int kvm_trylock_all_vcpus(struct kvm *kvm)
 	lockdep_assert_held(&kvm->lock);
 
 	kvm_for_each_vcpu(i, vcpu, kvm)
-		if (!mutex_trylock_nest_lock(&vcpu->mutex, &kvm->lock))
+		if (!mutex_trylock_nest_lock(kvm_vcpu_mutex(vcpu), &kvm->lock))
 			goto out_unlock;
 	return 0;
 
@@ -1371,7 +1549,7 @@ out_unlock:
 	kvm_for_each_vcpu(j, vcpu, kvm) {
 		if (i == j)
 			break;
-		mutex_unlock(&vcpu->mutex);
+		kvm_vcpu_unlock(vcpu);
 	}
 	return -EINTR;
 }
@@ -1386,7 +1564,7 @@ int kvm_lock_all_vcpus(struct kvm *kvm)
 	lockdep_assert_held(&kvm->lock);
 
 	kvm_for_each_vcpu(i, vcpu, kvm) {
-		r = mutex_lock_killable_nest_lock(&vcpu->mutex, &kvm->lock);
+		r = mutex_lock_killable_nest_lock(kvm_vcpu_mutex(vcpu), &kvm->lock);
 		if (r)
 			goto out_unlock;
 	}
@@ -1396,7 +1574,7 @@ out_unlock:
 	kvm_for_each_vcpu(j, vcpu, kvm) {
 		if (i == j)
 			break;
-		mutex_unlock(&vcpu->mutex);
+		kvm_vcpu_unlock(vcpu);
 	}
 	return r;
 }
@@ -1410,7 +1588,7 @@ void kvm_unlock_all_vcpus(struct kvm *kvm)
 	lockdep_assert_held(&kvm->lock);
 
 	kvm_for_each_vcpu(i, vcpu, kvm)
-		mutex_unlock(&vcpu->mutex);
+		kvm_vcpu_unlock(vcpu);
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_unlock_all_vcpus);
 
@@ -3555,7 +3733,9 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_mark_page_dirty);
 
 void kvm_sigset_activate(struct kvm_vcpu *vcpu)
 {
-	if (!vcpu->sigset_active)
+	struct kvm_vcpu_common *common = vcpu->common;
+
+	if (!common->sigset_active)
 		return;
 
 	/*
@@ -3564,12 +3744,14 @@ void kvm_sigset_activate(struct kvm_vcpu *vcpu)
 	 * ->real_blocked don't care as long ->real_blocked is always a subset
 	 * of ->blocked.
 	 */
-	sigprocmask(SIG_SETMASK, &vcpu->sigset, &current->real_blocked);
+	sigprocmask(SIG_SETMASK, &common->sigset, &current->real_blocked);
 }
 
 void kvm_sigset_deactivate(struct kvm_vcpu *vcpu)
 {
-	if (!vcpu->sigset_active)
+	struct kvm_vcpu_common *common = vcpu->common;
+
+	if (!common->sigset_active)
 		return;
 
 	sigprocmask(SIG_SETMASK, &current->real_blocked, NULL);
@@ -3578,9 +3760,10 @@ void kvm_sigset_deactivate(struct kvm_vcpu *vcpu)
 
 static void grow_halt_poll_ns(struct kvm_vcpu *vcpu)
 {
+	struct kvm_vcpu_common *common = vcpu->common;
 	unsigned int old, val, grow, grow_start;
 
-	old = val = vcpu->halt_poll_ns;
+	old = val = common->halt_poll_ns;
 	grow_start = READ_ONCE(halt_poll_ns_grow_start);
 	grow = READ_ONCE(halt_poll_ns_grow);
 	if (!grow)
@@ -3590,16 +3773,17 @@ static void grow_halt_poll_ns(struct kvm_vcpu *vcpu)
 	if (val < grow_start)
 		val = grow_start;
 
-	vcpu->halt_poll_ns = val;
+	common->halt_poll_ns = val;
 out:
 	trace_kvm_halt_poll_ns_grow(vcpu->vcpu_id, val, old);
 }
 
 static void shrink_halt_poll_ns(struct kvm_vcpu *vcpu)
 {
+	struct kvm_vcpu_common *common = vcpu->common;
 	unsigned int old, val, shrink, grow_start;
 
-	old = val = vcpu->halt_poll_ns;
+	old = val = common->halt_poll_ns;
 	shrink = READ_ONCE(halt_poll_ns_shrink);
 	grow_start = READ_ONCE(halt_poll_ns_grow_start);
 	if (shrink == 0)
@@ -3610,7 +3794,7 @@ static void shrink_halt_poll_ns(struct kvm_vcpu *vcpu)
 	if (val < grow_start)
 		val = 0;
 
-	vcpu->halt_poll_ns = val;
+	common->halt_poll_ns = val;
 	trace_kvm_halt_poll_ns_shrink(vcpu->vcpu_id, val, old);
 }
 
@@ -3721,19 +3905,20 @@ void kvm_vcpu_halt(struct kvm_vcpu *vcpu)
 {
 	unsigned int max_halt_poll_ns = kvm_vcpu_max_halt_poll_ns(vcpu);
 	bool halt_poll_allowed = !kvm_arch_no_poll(vcpu);
+	struct kvm_vcpu_common *common = vcpu->common;
 	ktime_t start, cur, poll_end;
 	bool waited = false;
 	bool do_halt_poll;
 	u64 halt_ns;
 
-	if (vcpu->halt_poll_ns > max_halt_poll_ns)
-		vcpu->halt_poll_ns = max_halt_poll_ns;
+	if (common->halt_poll_ns > max_halt_poll_ns)
+		common->halt_poll_ns = max_halt_poll_ns;
 
-	do_halt_poll = halt_poll_allowed && vcpu->halt_poll_ns;
+	do_halt_poll = halt_poll_allowed && common->halt_poll_ns;
 
 	start = cur = poll_end = ktime_get();
 	if (do_halt_poll) {
-		ktime_t stop = ktime_add_ns(start, vcpu->halt_poll_ns);
+		ktime_t stop = ktime_add_ns(start, common->halt_poll_ns);
 
 		do {
 			if (kvm_vcpu_check_block(vcpu) < 0)
@@ -3771,18 +3956,18 @@ out:
 		if (!vcpu_valid_wakeup(vcpu)) {
 			shrink_halt_poll_ns(vcpu);
 		} else if (max_halt_poll_ns) {
-			if (halt_ns <= vcpu->halt_poll_ns)
+			if (halt_ns <= common->halt_poll_ns)
 				;
 			/* we had a long block, shrink polling */
-			else if (vcpu->halt_poll_ns &&
+			else if (common->halt_poll_ns &&
 				 halt_ns > max_halt_poll_ns)
 				shrink_halt_poll_ns(vcpu);
 			/* we had a short halt and our poll time is too small */
-			else if (vcpu->halt_poll_ns < max_halt_poll_ns &&
+			else if (common->halt_poll_ns < max_halt_poll_ns &&
 				 halt_ns < max_halt_poll_ns)
 				grow_halt_poll_ns(vcpu);
 		} else {
-			vcpu->halt_poll_ns = 0;
+			common->halt_poll_ns = 0;
 		}
 	}
 
@@ -3793,7 +3978,7 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_halt);
 bool kvm_vcpu_wake_up(struct kvm_vcpu *vcpu)
 {
 	if (__kvm_vcpu_wake_up(vcpu)) {
-		WRITE_ONCE(vcpu->ready, true);
+		WRITE_ONCE(vcpu->common->ready, true);
 		++vcpu->stat.generic.halt_wakeup;
 		return true;
 	}
@@ -3801,6 +3986,18 @@ bool kvm_vcpu_wake_up(struct kvm_vcpu *vcpu)
 	return false;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_wake_up);
+
+int kvm_request_create_plane(struct kvm_vcpu *vcpu, unsigned plane, u64 apic_id)
+{
+	vcpu->run->exit_reason = KVM_EXIT_PLANE_EVENT;
+	memset(&vcpu->run->plane_event, 0, sizeof(vcpu->run->plane_event));
+	vcpu->run->plane_event.cause = KVM_PLANE_EVENT_CREATE_VCPU;
+	vcpu->run->plane_event.plane = plane;
+	vcpu->run->plane_event.extra[0] = apic_id;
+
+	return 0;
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_request_create_plane);
 
 #ifndef CONFIG_S390
 /*
@@ -3820,9 +4017,9 @@ void __kvm_vcpu_kick(struct kvm_vcpu *vcpu, bool wait)
 	 * kick" check does not need atomic operations if kvm_vcpu_kick is used
 	 * within the vCPU thread itself.
 	 */
-	if (vcpu == __this_cpu_read(kvm_running_vcpu)) {
-		if (vcpu->mode == IN_GUEST_MODE)
-			WRITE_ONCE(vcpu->mode, EXITING_GUEST_MODE);
+	if (vcpu == kvm_get_running_vcpu()) {
+		if (kvm_vcpu_mode(vcpu) == IN_GUEST_MODE)
+			kvm_vcpu_set_mode(vcpu, EXITING_GUEST_MODE);
 		goto out;
 	}
 
@@ -3857,16 +4054,17 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(__kvm_vcpu_kick);
 
 int kvm_vcpu_yield_to(struct kvm_vcpu *target)
 {
+	struct kvm_vcpu_common *common = target->common;
 	struct task_struct *task = NULL;
 	int ret;
 
-	if (!read_trylock(&target->pid_lock))
+	if (!read_trylock(&common->pid_lock))
 		return 0;
 
-	if (target->pid)
-		task = get_pid_task(target->pid, PIDTYPE_PID);
+	if (common->pid)
+		task = get_pid_task(common->pid, PIDTYPE_PID);
 
-	read_unlock(&target->pid_lock);
+	read_unlock(&common->pid_lock);
 
 	if (!task)
 		return 0;
@@ -3902,13 +4100,14 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_yield_to);
 static bool kvm_vcpu_eligible_for_directed_yield(struct kvm_vcpu *vcpu)
 {
 #ifdef CONFIG_HAVE_KVM_CPU_RELAX_INTERCEPT
+	struct kvm_vcpu_common *common = vcpu->common;
 	bool eligible;
 
-	eligible = !vcpu->spin_loop.in_spin_loop ||
-		    vcpu->spin_loop.dy_eligible;
+	eligible = !common->spin_loop.in_spin_loop ||
+		    common->spin_loop.dy_eligible;
 
-	if (vcpu->spin_loop.in_spin_loop)
-		kvm_vcpu_set_dy_eligible(vcpu, !vcpu->spin_loop.dy_eligible);
+	if (common->spin_loop.in_spin_loop)
+		kvm_vcpu_set_dy_eligible(vcpu, !common->spin_loop.dy_eligible);
 
 	return eligible;
 #else
@@ -3997,8 +4196,8 @@ void kvm_vcpu_on_spin(struct kvm_vcpu *me, bool yield_to_kernel_mode)
 		if (idx == me->vcpu_idx)
 			continue;
 
-		vcpu = xa_load(&kvm->vcpu_array, idx);
-		if (!READ_ONCE(vcpu->ready))
+		vcpu = xa_load(&kvm->planes[0]->vcpu_array, idx);
+		if (!kvm_vcpu_ready(vcpu))
 			continue;
 		if (kvm_vcpu_is_blocking(vcpu) && !vcpu_dy_runnable(vcpu))
 			continue;
@@ -4009,7 +4208,7 @@ void kvm_vcpu_on_spin(struct kvm_vcpu *me, bool yield_to_kernel_mode)
 		 * waiting on IPI delivery, i.e. the target vCPU is in-kernel
 		 * for the purposes of directed yield.
 		 */
-		if (READ_ONCE(vcpu->preempted) && yield_to_kernel_mode &&
+		if (kvm_vcpu_preempted(vcpu) && yield_to_kernel_mode &&
 		    !kvm_arch_dy_has_pending_interrupt(vcpu) &&
 		    !kvm_arch_vcpu_preempted_in_kernel(vcpu))
 			continue;
@@ -4052,7 +4251,7 @@ static vm_fault_t kvm_vcpu_fault(struct vm_fault *vmf)
 		page = virt_to_page(vcpu->run);
 #ifdef CONFIG_X86
 	else if (vmf->pgoff == KVM_PIO_PAGE_OFFSET)
-		page = virt_to_page(vcpu->arch.pio_data);
+		page = virt_to_page(vcpu->common->arch.pio_data);
 #endif
 #ifdef CONFIG_KVM_MMIO
 	else if (vmf->pgoff == KVM_COALESCED_MMIO_PAGE_OFFSET)
@@ -4060,7 +4259,7 @@ static vm_fault_t kvm_vcpu_fault(struct vm_fault *vmf)
 #endif
 	else if (kvm_page_in_dirty_ring(vcpu->kvm, vmf->pgoff))
 		page = kvm_dirty_ring_get_page(
-		    &vcpu->dirty_ring,
+		    &vcpu->common->dirty_ring,
 		    vmf->pgoff - KVM_DIRTY_LOG_PAGE_OFFSET);
 	else
 		return kvm_arch_vcpu_fault(vcpu, vmf);
@@ -4108,9 +4307,13 @@ static struct file_operations kvm_vcpu_fops = {
  */
 static int create_vcpu_fd(struct kvm_vcpu *vcpu)
 {
-	char name[8 + 1 + ITOA_MAX_LEN + 1];
+	char name[14 + 1 + (2 * ITOA_MAX_LEN) + 1];
 
-	snprintf(name, sizeof(name), "kvm-vcpu:%d", vcpu->vcpu_id);
+	if (vcpu->plane_level == 0)
+		snprintf(name, sizeof(name), "kvm-vcpu:%d", vcpu->vcpu_id);
+	else
+		snprintf(name, sizeof(name), "kvm-vcpu-plane%d:%d", vcpu->plane_level, vcpu->vcpu_id);
+
 	return anon_inode_getfd(name, &kvm_vcpu_fops, vcpu, O_RDWR | O_CLOEXEC);
 }
 
@@ -4119,9 +4322,9 @@ static int vcpu_get_pid(void *data, u64 *val)
 {
 	struct kvm_vcpu *vcpu = data;
 
-	read_lock(&vcpu->pid_lock);
-	*val = pid_nr(vcpu->pid);
-	read_unlock(&vcpu->pid_lock);
+	read_lock(&vcpu->common->pid_lock);
+	*val = pid_nr(vcpu->common->pid);
+	read_unlock(&vcpu->common->pid_lock);
 	return 0;
 }
 
@@ -4129,13 +4332,17 @@ DEFINE_SIMPLE_ATTRIBUTE(vcpu_get_pid_fops, vcpu_get_pid, NULL, "%llu\n");
 
 static void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu)
 {
+	char dir_name[10 + (2 * ITOA_MAX_LEN) + 1];
 	struct dentry *debugfs_dentry;
-	char dir_name[ITOA_MAX_LEN * 2];
 
 	if (!debugfs_initialized())
 		return;
 
-	snprintf(dir_name, sizeof(dir_name), "vcpu%d", vcpu->vcpu_id);
+	if (vcpu->plane_level == 0)
+		snprintf(dir_name, sizeof(dir_name), "vcpu%d", vcpu->vcpu_id);
+	else
+		snprintf(dir_name, sizeof(dir_name), "vcpu%d-plane%d", vcpu->plane_level, vcpu->vcpu_id);
+
 	debugfs_dentry = debugfs_create_dir(dir_name,
 					    vcpu->kvm->debugfs_dentry);
 	debugfs_create_file("pid", 0444, debugfs_dentry, vcpu,
@@ -4148,23 +4355,11 @@ static void kvm_create_vcpu_debugfs(struct kvm_vcpu *vcpu)
 /*
  * Creates some virtual cpus.  Good luck creating more than one.
  */
-static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, unsigned long id)
+static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id)
 {
-	int r;
+	struct kvm *kvm = plane->kvm;
 	struct kvm_vcpu *vcpu;
-	struct page *page;
-
-	/*
-	 * KVM tracks vCPU IDs as 'int', be kind to userspace and reject
-	 * too-large values instead of silently truncating.
-	 *
-	 * Ensure KVM_MAX_VCPU_IDS isn't pushed above INT_MAX without first
-	 * changing the storage type (at the very least, IDs should be tracked
-	 * as unsigned ints).
-	 */
-	BUILD_BUG_ON(KVM_MAX_VCPU_IDS > INT_MAX);
-	if (id >= KVM_MAX_VCPU_IDS)
-		return -EINVAL;
+	int r;
 
 	mutex_lock(&kvm->lock);
 	if (kvm->created_vcpus >= kvm->max_vcpus) {
@@ -4173,50 +4368,48 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, unsigned long id)
 	}
 
 	r = kvm_arch_vcpu_precreate(kvm, id);
-	if (r) {
-		mutex_unlock(&kvm->lock);
-		return r;
-	}
-
-	kvm->created_vcpus++;
 	mutex_unlock(&kvm->lock);
+	if (r)
+		return r;
 
 	vcpu = kmem_cache_zalloc(kvm_vcpu_cache, GFP_KERNEL_ACCOUNT);
-	if (!vcpu) {
-		r = -ENOMEM;
-		goto vcpu_decrement;
+	if (!vcpu)
+		return -ENOMEM;
+
+	r = -EEXIST;
+	if (plane_get_vcpu_by_id(plane, id))
+		goto vcpu_free;
+
+	if (plane->level > 0) {
+		struct kvm_vcpu *vcpu_plane0 = kvm_get_vcpu_by_id(kvm, id);
+
+		/* Plane0 VCPU must exist before creating non-plane0 VCPUs */
+		r = -EINVAL;
+		if (vcpu_plane0 == NULL)
+			goto vcpu_free;
+
+		vcpu->common = vcpu_plane0->common;
+	} else {
+		r = kvm_vcpu_init_common(vcpu, kvm, id);
+		if (r)
+			goto vcpu_free;
 	}
 
-	BUILD_BUG_ON(sizeof(struct kvm_run) > PAGE_SIZE);
-	page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
-	if (!page) {
-		r = -ENOMEM;
-		goto vcpu_free;
-	}
-	vcpu->run = page_address(page);
+	vcpu->vcpu_idx = vcpu->common->vcpu_idx;
+	vcpu->plane = plane;
+	vcpu->plane_level = plane->level;
+	vcpu->plane_state = STOPPED;
+	vcpu->run = vcpu->common->run;
 
 	kvm_vcpu_init(vcpu, kvm, id);
 
 	r = kvm_arch_vcpu_create(vcpu);
 	if (r)
-		goto vcpu_free_run_page;
-
-	if (kvm->dirty_ring_size) {
-		r = kvm_dirty_ring_alloc(kvm, &vcpu->dirty_ring,
-					 id, kvm->dirty_ring_size);
-		if (r)
-			goto arch_vcpu_destroy;
-	}
+		goto vcpu_free_common;
 
 	mutex_lock(&kvm->lock);
 
-	if (kvm_get_vcpu_by_id(kvm, id)) {
-		r = -EEXIST;
-		goto unlock_vcpu_destroy;
-	}
-
-	vcpu->vcpu_idx = atomic_read(&kvm->online_vcpus);
-	r = xa_insert(&kvm->vcpu_array, vcpu->vcpu_idx, vcpu, GFP_KERNEL_ACCOUNT);
+	r = xa_insert(&plane->vcpu_array, vcpu->vcpu_idx, vcpu, GFP_KERNEL_ACCOUNT);
 	WARN_ON_ONCE(r == -EBUSY);
 	if (r)
 		goto unlock_vcpu_destroy;
@@ -4229,19 +4422,14 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, unsigned long id)
 	 * vCPU doesn't exist.  As a bonus, taking vcpu->mutex ensures lockdep
 	 * knows it's taken *inside* kvm->lock.
 	 */
-	mutex_lock(&vcpu->mutex);
+	kvm_vcpu_lock(vcpu);
 	kvm_get_kvm(kvm);
 	r = create_vcpu_fd(vcpu);
 	if (r < 0)
 		goto kvm_put_xa_erase;
 
-	/*
-	 * Pairs with smp_rmb() in kvm_get_vcpu.  Store the vcpu
-	 * pointer before kvm->online_vcpu's incremented value.
-	 */
-	smp_wmb();
-	atomic_inc(&kvm->online_vcpus);
-	mutex_unlock(&vcpu->mutex);
+	kvm_vcpu_finish_common(vcpu);
+	kvm_vcpu_unlock(vcpu);
 
 	mutex_unlock(&kvm->lock);
 	kvm_arch_vcpu_postcreate(vcpu);
@@ -4249,33 +4437,30 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, unsigned long id)
 	return r;
 
 kvm_put_xa_erase:
-	mutex_unlock(&vcpu->mutex);
+	kvm_vcpu_unlock(vcpu);
 	kvm_put_kvm_no_destroy(kvm);
-	xa_erase(&kvm->vcpu_array, vcpu->vcpu_idx);
+	xa_erase(&kvm->planes[0]->vcpu_array, vcpu->vcpu_idx);
 unlock_vcpu_destroy:
 	mutex_unlock(&kvm->lock);
-	kvm_dirty_ring_free(&vcpu->dirty_ring);
-arch_vcpu_destroy:
 	kvm_arch_vcpu_destroy(vcpu);
-vcpu_free_run_page:
-	free_page((unsigned long)vcpu->run);
+vcpu_free_common:
+	kvm_vcpu_common_destroy(vcpu);
 vcpu_free:
 	kmem_cache_free(kvm_vcpu_cache, vcpu);
-vcpu_decrement:
-	mutex_lock(&kvm->lock);
-	kvm->created_vcpus--;
-	mutex_unlock(&kvm->lock);
+
 	return r;
 }
 
 static int kvm_vcpu_ioctl_set_sigmask(struct kvm_vcpu *vcpu, sigset_t *sigset)
 {
+	struct kvm_vcpu_common *common = vcpu->common;
+
 	if (sigset) {
 		sigdelsetmask(sigset, sigmask(SIGKILL)|sigmask(SIGSTOP));
-		vcpu->sigset_active = 1;
-		vcpu->sigset = *sigset;
+		common->sigset_active = 1;
+		common->sigset = *sigset;
 	} else
-		vcpu->sigset_active = 0;
+		common->sigset_active = 0;
 	return 0;
 }
 
@@ -4388,18 +4573,56 @@ static int kvm_wait_for_vcpu_online(struct kvm_vcpu *vcpu)
 
 	/*
 	 * Acquire and release the vCPU's mutex to wait for vCPU creation to
-	 * complete (kvm_vm_ioctl_create_vcpu() holds the mutex until the vCPU
+	 * complete (kvm_plane_ioctl_create_vcpu() holds the mutex until the vCPU
 	 * is fully online).
 	 */
-	if (mutex_lock_killable(&vcpu->mutex))
+	if (mutex_lock_killable(kvm_vcpu_mutex(vcpu)))
 		return -EINTR;
 
-	mutex_unlock(&vcpu->mutex);
+	kvm_vcpu_unlock(vcpu);
 
 	if (WARN_ON_ONCE(!kvm_get_vcpu(kvm, vcpu->vcpu_idx)))
 		return -EIO;
 
 	return 0;
+}
+
+static inline bool kvm_is_vcpu_plane_ioctl(unsigned ioctl)
+{
+	switch (ioctl) {
+	case KVM_GET_DEBUGREGS:
+	case KVM_SET_DEBUGREGS:
+	case KVM_GET_FPU:
+	case KVM_SET_FPU:
+	case KVM_GET_LAPIC:
+	case KVM_SET_LAPIC:
+	case KVM_GET_MSRS:
+	case KVM_SET_MSRS:
+	case KVM_GET_NESTED_STATE:
+	case KVM_SET_NESTED_STATE:
+	case KVM_GET_ONE_REG:
+	case KVM_SET_ONE_REG:
+	case KVM_GET_REGS:
+	case KVM_SET_REGS:
+	case KVM_GET_SREGS:
+	case KVM_SET_SREGS:
+	case KVM_GET_SREGS2:
+	case KVM_SET_SREGS2:
+	case KVM_GET_VCPU_EVENTS:
+	case KVM_SET_VCPU_EVENTS:
+	case KVM_GET_XCRS:
+	case KVM_SET_XCRS:
+	case KVM_GET_XSAVE:
+	case KVM_GET_XSAVE2:
+	case KVM_SET_XSAVE:
+
+	case KVM_GET_REG_LIST:
+	case KVM_TRANSLATE:
+		return true;
+
+	default:
+		return false;
+	}
 }
 
 static long kvm_vcpu_ioctl(struct file *filp,
@@ -4413,6 +4636,9 @@ static long kvm_vcpu_ioctl(struct file *filp,
 
 	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
 		return -EIO;
+
+	if (vcpu->plane_level > 0 && !kvm_is_vcpu_plane_ioctl(ioctl))
+		return -EINVAL;
 
 	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
 		return -EINVAL;
@@ -4434,10 +4660,11 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	if (r != -ENOIOCTLCMD)
 		return r;
 
-	if (mutex_lock_killable(&vcpu->mutex))
+	if (mutex_lock_killable(kvm_vcpu_mutex(vcpu)))
 		return -EINTR;
 	switch (ioctl) {
 	case KVM_RUN: {
+		struct kvm_vcpu_common *common = vcpu->common;
 		struct pid *oldpid;
 		r = -EINVAL;
 		if (arg)
@@ -4449,7 +4676,7 @@ static long kvm_vcpu_ioctl(struct file *filp,
 		 * read vcpu->pid while this vCPU is in KVM_RUN, e.g. to yield
 		 * directly to this vCPU
 		 */
-		oldpid = vcpu->pid;
+		oldpid = common->pid;
 		if (unlikely(oldpid != task_pid(current))) {
 			/* The thread running this VCPU changed. */
 			struct pid *newpid;
@@ -4459,15 +4686,15 @@ static long kvm_vcpu_ioctl(struct file *filp,
 				break;
 
 			newpid = get_task_pid(current, PIDTYPE_PID);
-			write_lock(&vcpu->pid_lock);
-			vcpu->pid = newpid;
-			write_unlock(&vcpu->pid_lock);
+			write_lock(&common->pid_lock);
+			common->pid = newpid;
+			write_unlock(&common->pid_lock);
 
 			put_pid(oldpid);
 		}
-		vcpu->wants_to_run = !READ_ONCE(vcpu->run->immediate_exit__unsafe);
+		vcpu->common->wants_to_run = !READ_ONCE(vcpu->run->immediate_exit__unsafe);
 		r = kvm_arch_vcpu_ioctl_run(vcpu);
-		vcpu->wants_to_run = false;
+		common->wants_to_run = false;
 
 		/*
 		 * FIXME: Remove this hack once all KVM architectures
@@ -4646,7 +4873,7 @@ out_free1:
 		r = kvm_arch_vcpu_ioctl(filp, ioctl, arg);
 	}
 out:
-	mutex_unlock(&vcpu->mutex);
+	kvm_vcpu_unlock(vcpu);
 	kfree(fpu);
 	kfree(kvm_sregs);
 	return r;
@@ -4694,6 +4921,134 @@ out:
 	return r;
 }
 #endif
+
+static long __kvm_plane_ioctl(struct kvm_plane *plane, unsigned int ioctl, unsigned long arg)
+{
+	void __user *argp = (void __user *)arg;
+	long r;
+
+	switch (ioctl) {
+	case KVM_CREATE_VCPU:
+		r = kvm_plane_ioctl_create_vcpu(plane, arg);
+		break;
+#ifdef CONFIG_HAVE_KVM_MSI
+	case KVM_SIGNAL_MSI: {
+		struct kvm_msi msi;
+
+		r = -EFAULT;
+		if (copy_from_user(&msi, argp, sizeof(msi)))
+			goto out;
+		r = kvm_send_userspace_msi(plane->kvm, &msi, plane->level);
+		break;
+	}
+#endif
+#ifdef CONFIG_HAVE_KVM_IRQ_ROUTING
+	case KVM_SET_GSI_ROUTING: {
+		struct kvm_irq_routing routing;
+		struct kvm_irq_routing __user *urouting;
+		struct kvm_irq_routing_entry *entries = NULL;
+
+		r = -EFAULT;
+		if (copy_from_user(&routing, argp, sizeof(routing)))
+			goto out;
+		r = -EINVAL;
+		if (!kvm_arch_can_set_irq_routing(plane->kvm))
+			goto out;
+		if (routing.nr > KVM_MAX_IRQ_ROUTES)
+			goto out;
+		if (routing.flags)
+			goto out;
+		if (routing.nr) {
+			urouting = argp;
+			entries = vmemdup_array_user(urouting->entries,
+						     routing.nr, sizeof(*entries));
+			if (IS_ERR(entries)) {
+				r = PTR_ERR(entries);
+				goto out;
+			}
+		}
+		r = kvm_set_irq_routing(plane->kvm, entries, routing.nr,
+					routing.flags, plane->level);
+		kvfree(entries);
+		break;
+	}
+#endif /* CONFIG_HAVE_KVM_IRQ_ROUTING */
+	default:
+		r = -ENOTTY;
+	}
+
+out:
+	return r;
+}
+
+static long kvm_plane_ioctl(struct file *filp, unsigned int ioctl,
+			    unsigned long arg)
+{
+	struct kvm_plane *plane = filp->private_data;
+
+	if (plane->kvm->mm != current->mm || plane->kvm->vm_dead)
+		return -EIO;
+
+	return __kvm_plane_ioctl(plane, ioctl, arg);
+}
+
+static int kvm_plane_release(struct inode *inode, struct file *filp)
+{
+	struct kvm_plane *plane = filp->private_data;
+
+	kvm_put_kvm(plane->kvm);
+	return 0;
+}
+
+static struct file_operations kvm_plane_fops = {
+	.unlocked_ioctl = kvm_plane_ioctl,
+	.release = kvm_plane_release,
+	KVM_COMPAT(kvm_plane_ioctl),
+};
+
+void kvm_vcpu_set_plane_runnable(struct kvm_vcpu *vcpu)
+{
+	vcpu->plane_state = RUNNABLE;
+	vcpu->common->plane_switch = true;
+	kvm_make_request(KVM_REQ_PLANE_RESCHED, vcpu);
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_set_plane_runnable);
+
+void kvm_vcpu_set_plane_stopped(struct kvm_vcpu *vcpu)
+{
+	vcpu->plane_state = STOPPED;
+	kvm_make_request(KVM_REQ_PLANE_RESCHED, vcpu);
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_set_plane_stopped);
+
+struct kvm_vcpu *kvm_vcpu_select_plane(struct kvm_vcpu *vcpu)
+{
+	struct kvm_vcpu_common *common = vcpu->common;
+	struct kvm_vcpu *ret = NULL;
+	unsigned i;
+
+	for (i = 0; i < KVM_MAX_PLANES; i++) {
+		if (common->vcpus[i] == NULL)
+			continue;
+
+		if (common->vcpus[i]->plane_state == RUNNABLE) {
+			ret = common->vcpus[i];
+			break;
+		}
+	}
+
+	if (ret == NULL) {
+		ret = common->vcpus[0];
+		ret->plane_state = RUNNABLE;
+	}
+
+	common->current_vcpu = ret;
+
+	common->plane_switch = false;
+
+	return ret;
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_select_plane);
 
 static int kvm_device_mmap(struct file *filp, struct vm_area_struct *vma)
 {
@@ -4931,6 +5286,10 @@ static int kvm_vm_ioctl_check_extension_generic(struct kvm *kvm, long arg)
 	case KVM_CAP_GUEST_MEMFD_FLAGS:
 		return kvm_gmem_get_supported_flags(kvm);
 #endif
+	case KVM_CAP_PLANES:
+		if (kvm)
+			return kvm_arch_max_planes(kvm);
+		return 1;
 	default:
 		break;
 	}
@@ -4987,7 +5346,7 @@ static int kvm_vm_ioctl_reset_dirty_pages(struct kvm *kvm)
 	mutex_lock(&kvm->slots_lock);
 
 	kvm_for_each_vcpu(i, vcpu, kvm) {
-		r = kvm_dirty_ring_reset(vcpu->kvm, &vcpu->dirty_ring, &cleared);
+		r = kvm_dirty_ring_reset(vcpu->kvm, &vcpu->common->dirty_ring, &cleared);
 		if (r)
 			break;
 	}
@@ -5136,6 +5495,55 @@ static int kvm_vm_ioctl_get_stats_fd(struct kvm *kvm)
 	return fd;
 }
 
+static int kvm_vm_ioctl_create_plane(struct kvm *kvm, unsigned id)
+{
+	struct kvm_plane *plane;
+	struct file *file;
+	int r, fd;
+
+	if (id >= kvm_arch_max_planes(kvm) ||
+	    WARN_ON_ONCE(id >= KVM_MAX_PLANES))
+		return -EINVAL;
+
+	/* Planes are only supported with in-kernel IRQ-chip */
+	if (!kvm_arch_irqchip_in_kernel(kvm))
+		return -EINVAL;
+
+	guard(mutex)(&kvm->lock);
+	if (kvm->planes[id])
+		return -EEXIST;
+
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0)
+		return fd;
+
+	plane = kvm_create_plane(kvm, id);
+	if (!plane) {
+		r = -ENOMEM;
+		goto put_fd;
+	}
+
+	kvm_get_kvm(kvm);
+	file = anon_inode_getfile("kvm-plane", &kvm_plane_fops, plane, O_RDWR);
+	if (IS_ERR(file)) {
+		r = PTR_ERR(file);
+		goto put_kvm;
+	}
+
+	kvm->planes[id] = plane;
+	kvm->has_planes = true;
+	fd_install(fd, file);
+	return fd;
+
+put_kvm:
+	kvm_put_kvm(kvm);
+	kvm_destroy_one_plane(plane);
+put_fd:
+	put_unused_fd(fd);
+	return r;
+}
+
+
 #define SANITY_CHECK_MEM_REGION_FIELD(field)					\
 do {										\
 	BUILD_BUG_ON(offsetof(struct kvm_userspace_memory_region, field) !=		\
@@ -5154,8 +5562,17 @@ static long kvm_vm_ioctl(struct file *filp,
 	if (kvm->mm != current->mm || kvm->vm_dead)
 		return -EIO;
 	switch (ioctl) {
+	case KVM_CREATE_PLANE:
+		r = kvm_vm_ioctl_create_plane(kvm, arg);
+		break;
 	case KVM_CREATE_VCPU:
-		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
+#ifdef CONFIG_HAVE_KVM_MSI
+	case KVM_SIGNAL_MSI:
+#endif
+#ifdef CONFIG_HAVE_KVM_IRQ_ROUTING
+	case KVM_SET_GSI_ROUTING:
+#endif
+		r = __kvm_plane_ioctl(kvm->planes[0], ioctl, arg);
 		break;
 	case KVM_ENABLE_CAP: {
 		struct kvm_enable_cap cap;
@@ -5259,17 +5676,6 @@ static long kvm_vm_ioctl(struct file *filp,
 		r = kvm_ioeventfd(kvm, &data);
 		break;
 	}
-#ifdef CONFIG_HAVE_KVM_MSI
-	case KVM_SIGNAL_MSI: {
-		struct kvm_msi msi;
-
-		r = -EFAULT;
-		if (copy_from_user(&msi, argp, sizeof(msi)))
-			goto out;
-		r = kvm_send_userspace_msi(kvm, &msi);
-		break;
-	}
-#endif
 #ifdef __KVM_HAVE_IRQ_LINE
 	case KVM_IRQ_LINE_STATUS:
 	case KVM_IRQ_LINE: {
@@ -5294,37 +5700,6 @@ static long kvm_vm_ioctl(struct file *filp,
 		break;
 	}
 #endif
-#ifdef CONFIG_HAVE_KVM_IRQ_ROUTING
-	case KVM_SET_GSI_ROUTING: {
-		struct kvm_irq_routing routing;
-		struct kvm_irq_routing __user *urouting;
-		struct kvm_irq_routing_entry *entries = NULL;
-
-		r = -EFAULT;
-		if (copy_from_user(&routing, argp, sizeof(routing)))
-			goto out;
-		r = -EINVAL;
-		if (!kvm_arch_can_set_irq_routing(kvm))
-			goto out;
-		if (routing.nr > KVM_MAX_IRQ_ROUTES)
-			goto out;
-		if (routing.flags)
-			goto out;
-		if (routing.nr) {
-			urouting = argp;
-			entries = vmemdup_array_user(urouting->entries,
-						     routing.nr, sizeof(*entries));
-			if (IS_ERR(entries)) {
-				r = PTR_ERR(entries);
-				goto out;
-			}
-		}
-		r = kvm_set_irq_routing(kvm, entries, routing.nr,
-					routing.flags);
-		kvfree(entries);
-		break;
-	}
-#endif /* CONFIG_HAVE_KVM_IRQ_ROUTING */
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
 	case KVM_SET_MEMORY_ATTRIBUTES: {
 		struct kvm_memory_attributes attrs;
@@ -6373,36 +6748,36 @@ static void kvm_init_debug(void)
 }
 
 static inline
-struct kvm_vcpu *preempt_notifier_to_vcpu(struct preempt_notifier *pn)
+struct kvm_vcpu_common *preempt_notifier_to_vcpu_common(struct preempt_notifier *pn)
 {
-	return container_of(pn, struct kvm_vcpu, preempt_notifier);
+	return container_of(pn, struct kvm_vcpu_common, preempt_notifier);
 }
 
 static void kvm_sched_in(struct preempt_notifier *pn, int cpu)
 {
-	struct kvm_vcpu *vcpu = preempt_notifier_to_vcpu(pn);
+	struct kvm_vcpu_common *common = preempt_notifier_to_vcpu_common(pn);
 
-	WRITE_ONCE(vcpu->preempted, false);
-	WRITE_ONCE(vcpu->ready, false);
+	WRITE_ONCE(common->preempted, false);
+	WRITE_ONCE(common->ready, false);
 
-	__this_cpu_write(kvm_running_vcpu, vcpu);
-	kvm_arch_vcpu_load(vcpu, cpu);
+	__this_cpu_write(kvm_running_vcpu, common);
+	kvm_arch_vcpu_load(common->current_vcpu, cpu);
 
-	WRITE_ONCE(vcpu->scheduled_out, false);
+	WRITE_ONCE(common->scheduled_out, false);
 }
 
 static void kvm_sched_out(struct preempt_notifier *pn,
 			  struct task_struct *next)
 {
-	struct kvm_vcpu *vcpu = preempt_notifier_to_vcpu(pn);
+	struct kvm_vcpu_common *common = preempt_notifier_to_vcpu_common(pn);
 
-	WRITE_ONCE(vcpu->scheduled_out, true);
+	WRITE_ONCE(common->scheduled_out, true);
 
-	if (task_is_runnable(current) && vcpu->wants_to_run) {
-		WRITE_ONCE(vcpu->preempted, true);
-		WRITE_ONCE(vcpu->ready, true);
+	if (task_is_runnable(current) && common->wants_to_run) {
+		WRITE_ONCE(common->preempted, true);
+		WRITE_ONCE(common->ready, true);
 	}
-	kvm_arch_vcpu_put(vcpu);
+	kvm_arch_vcpu_put(common->current_vcpu);
 	__this_cpu_write(kvm_running_vcpu, NULL);
 }
 
@@ -6417,11 +6792,15 @@ static void kvm_sched_out(struct preempt_notifier *pn,
  */
 struct kvm_vcpu *kvm_get_running_vcpu(void)
 {
-	struct kvm_vcpu *vcpu;
+	struct kvm_vcpu_common *common;
+	struct kvm_vcpu *vcpu = NULL;
 
 	preempt_disable();
-	vcpu = __this_cpu_read(kvm_running_vcpu);
+	common = __this_cpu_read(kvm_running_vcpu);
 	preempt_enable();
+
+	if (common)
+		vcpu = common->current_vcpu;
 
 	return vcpu;
 }
@@ -6430,7 +6809,7 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_get_running_vcpu);
 /**
  * kvm_get_running_vcpus - get the per-CPU array of currently running vcpus.
  */
-struct kvm_vcpu * __percpu *kvm_get_running_vcpus(void)
+struct kvm_vcpu_common * __percpu *kvm_get_running_vcpus(void)
 {
         return &kvm_running_vcpu;
 }
@@ -6520,6 +6899,7 @@ int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 	kvm_chardev_ops.owner = module;
 	kvm_vm_fops.owner = module;
 	kvm_vcpu_fops.owner = module;
+	kvm_plane_fops.owner = module;
 	kvm_device_fops.owner = module;
 
 	kvm_preempt_ops.sched_in = kvm_sched_in;

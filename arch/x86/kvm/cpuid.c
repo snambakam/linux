@@ -176,6 +176,7 @@ static void kvm_update_cpuid_runtime(struct kvm_vcpu *vcpu);
 static int kvm_cpuid_check_equal(struct kvm_vcpu *vcpu, struct kvm_cpuid_entry2 *e2,
 				 int nent)
 {
+	struct kvm_vcpu_common *common = vcpu->common;
 	struct kvm_cpuid_entry2 *orig;
 	int i;
 
@@ -188,11 +189,11 @@ static int kvm_cpuid_check_equal(struct kvm_vcpu *vcpu, struct kvm_cpuid_entry2 
 	kvm_update_cpuid_runtime(vcpu);
 	kvm_apply_cpuid_pv_features_quirk(vcpu);
 
-	if (nent != vcpu->arch.cpuid_nent)
+	if (nent != common->arch.cpuid_nent)
 		return -EINVAL;
 
 	for (i = 0; i < nent; i++) {
-		orig = &vcpu->arch.cpuid_entries[i];
+		orig = &common->arch.cpuid_entries[i];
 		if (e2[i].function != orig->function ||
 		    e2[i].index != orig->index ||
 		    e2[i].flags != orig->flags ||
@@ -283,14 +284,14 @@ static __always_inline void kvm_update_feature_runtime(struct kvm_vcpu *vcpu,
 						       bool has_feature)
 {
 	cpuid_entry_change(entry, x86_feature, has_feature);
-	guest_cpu_cap_change(vcpu, x86_feature, has_feature);
+	guest_cpu_cap_change(vcpu->common, x86_feature, has_feature);
 }
 
 static void kvm_update_cpuid_runtime(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
 
-	vcpu->arch.cpuid_dynamic_bits_dirty = false;
+	vcpu->common->arch.cpuid_dynamic_bits_dirty = false;
 
 	best = kvm_find_cpuid_entry(vcpu, 1);
 	if (best) {
@@ -374,13 +375,14 @@ static int cpuid_func_emulated(struct kvm_cpuid_entry2 *entry, u32 func,
 
 void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 {
+	struct kvm_vcpu_common *common = vcpu->common;
 	struct kvm_lapic *apic = vcpu->arch.apic;
 	struct kvm_cpuid_entry2 *best;
 	struct kvm_cpuid_entry2 *entry;
 	bool allow_gbpages;
 	int i;
 
-	memset(vcpu->arch.cpu_caps, 0, sizeof(vcpu->arch.cpu_caps));
+	memset(common->arch.cpu_caps, 0, sizeof(common->arch.cpu_caps));
 	BUILD_BUG_ON(ARRAY_SIZE(reverse_cpuid) != NR_KVM_CPU_CAPS);
 
 	/*
@@ -406,9 +408,9 @@ void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 		 * in guest CPUID.  Note, this includes features that are
 		 * supported by KVM but aren't advertised to userspace!
 		 */
-		vcpu->arch.cpu_caps[i] = kvm_cpu_caps[i] |
-					 cpuid_get_reg_unsafe(&emulated, cpuid.reg);
-		vcpu->arch.cpu_caps[i] &= cpuid_get_reg_unsafe(entry, cpuid.reg);
+		common->arch.cpu_caps[i] = kvm_cpu_caps[i] |
+					   cpuid_get_reg_unsafe(&emulated, cpuid.reg);
+		common->arch.cpu_caps[i] &= cpuid_get_reg_unsafe(entry, cpuid.reg);
 	}
 
 	kvm_update_cpuid_runtime(vcpu);
@@ -426,7 +428,7 @@ void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 	 */
 	allow_gbpages = tdp_enabled ? boot_cpu_has(X86_FEATURE_GBPAGES) :
 				      guest_cpu_cap_has(vcpu, X86_FEATURE_GBPAGES);
-	guest_cpu_cap_change(vcpu, X86_FEATURE_GBPAGES, allow_gbpages);
+	guest_cpu_cap_change(common, X86_FEATURE_GBPAGES, allow_gbpages);
 
 	best = kvm_find_cpuid_entry(vcpu, 1);
 	if (best && apic) {
@@ -443,7 +445,7 @@ void kvm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 
 	vcpu->arch.pv_cpuid.features = kvm_apply_cpuid_pv_features_quirk(vcpu);
 
-	vcpu->arch.is_amd_compatible = guest_cpuid_is_amd_or_hygon(vcpu);
+	common->arch.is_amd_compatible = guest_cpuid_is_amd_or_hygon(vcpu);
 	vcpu->arch.maxphyaddr = cpuid_query_maxphyaddr(vcpu);
 	vcpu->arch.reserved_gpa_bits = kvm_vcpu_reserved_gpa_bits_raw(vcpu);
 
@@ -509,14 +511,17 @@ u64 kvm_vcpu_reserved_gpa_bits_raw(struct kvm_vcpu *vcpu)
 static int kvm_set_cpuid(struct kvm_vcpu *vcpu, struct kvm_cpuid_entry2 *e2,
                         int nent)
 {
+	struct kvm_vcpu_common *common = vcpu->common;
 	u32 vcpu_caps[NR_KVM_CPU_CAPS];
+	struct kvm_vcpu *v;
+	unsigned i;
 	int r;
 
 	/*
 	 * Apply pending runtime CPUID updates to the current CPUID entries to
 	 * avoid false positives due to mismatches on KVM-owned feature flags.
 	 */
-	if (vcpu->arch.cpuid_dynamic_bits_dirty)
+	if (common->arch.cpuid_dynamic_bits_dirty)
 		kvm_update_cpuid_runtime(vcpu);
 
 	/*
@@ -530,11 +535,11 @@ static int kvm_set_cpuid(struct kvm_vcpu *vcpu, struct kvm_cpuid_entry2 *e2,
 	 * updates.  Full initialization is done if and only if the vCPU hasn't
 	 * run, i.e. only if userspace is potentially changing CPUID features.
 	 */
-	swap(vcpu->arch.cpuid_entries, e2);
-	swap(vcpu->arch.cpuid_nent, nent);
+	swap(common->arch.cpuid_entries, e2);
+	swap(common->arch.cpuid_nent, nent);
 
-	memcpy(vcpu_caps, vcpu->arch.cpu_caps, sizeof(vcpu_caps));
-	BUILD_BUG_ON(sizeof(vcpu_caps) != sizeof(vcpu->arch.cpu_caps));
+	memcpy(vcpu_caps, common->arch.cpu_caps, sizeof(vcpu_caps));
+	BUILD_BUG_ON(sizeof(vcpu_caps) != sizeof(common->arch.cpu_caps));
 
 	/*
 	 * KVM does not correctly handle changing guest CPUID after KVM_RUN or
@@ -559,9 +564,11 @@ static int kvm_set_cpuid(struct kvm_vcpu *vcpu, struct kvm_cpuid_entry2 *e2,
 
 #ifdef CONFIG_KVM_HYPERV
 	if (kvm_cpuid_has_hyperv(vcpu)) {
-		r = kvm_hv_vcpu_init(vcpu);
-		if (r)
-			goto err;
+		vcpu_for_each_plane(common, i, v) {
+			r = kvm_hv_vcpu_init(vcpu);
+			if (r)
+				goto err;
+		}
 	}
 #endif
 
@@ -569,19 +576,21 @@ static int kvm_set_cpuid(struct kvm_vcpu *vcpu, struct kvm_cpuid_entry2 *e2,
 	if (r)
 		goto err;
 
+	vcpu_for_each_plane(vcpu->common, i, v) {
 #ifdef CONFIG_KVM_XEN
-	vcpu->arch.xen.cpuid = kvm_get_hypervisor_cpuid(vcpu, XEN_SIGNATURE);
+		v->arch.xen.cpuid = kvm_get_hypervisor_cpuid(vcpu, XEN_SIGNATURE);
 #endif
-	kvm_vcpu_after_set_cpuid(vcpu);
+		kvm_vcpu_after_set_cpuid(v);
+	}
 
 success:
 	kvfree(e2);
 	return 0;
 
 err:
-	memcpy(vcpu->arch.cpu_caps, vcpu_caps, sizeof(vcpu_caps));
-	swap(vcpu->arch.cpuid_entries, e2);
-	swap(vcpu->arch.cpuid_nent, nent);
+	memcpy(common->arch.cpu_caps, vcpu_caps, sizeof(vcpu_caps));
+	swap(common->arch.cpuid_entries, e2);
+	swap(common->arch.cpuid_nent, nent);
 	return r;
 }
 
@@ -658,17 +667,19 @@ int kvm_vcpu_ioctl_get_cpuid2(struct kvm_vcpu *vcpu,
 			      struct kvm_cpuid2 *cpuid,
 			      struct kvm_cpuid_entry2 __user *entries)
 {
-	if (cpuid->nent < vcpu->arch.cpuid_nent)
+	struct kvm_vcpu_common *common = vcpu->common;
+
+	if (cpuid->nent < common->arch.cpuid_nent)
 		return -E2BIG;
 
-	if (vcpu->arch.cpuid_dynamic_bits_dirty)
+	if (common->arch.cpuid_dynamic_bits_dirty)
 		kvm_update_cpuid_runtime(vcpu);
 
-	if (copy_to_user(entries, vcpu->arch.cpuid_entries,
-			 vcpu->arch.cpuid_nent * sizeof(struct kvm_cpuid_entry2)))
+	if (copy_to_user(entries, common->arch.cpuid_entries,
+			 common->arch.cpuid_nent * sizeof(struct kvm_cpuid_entry2)))
 		return -EFAULT;
 
-	cpuid->nent = vcpu->arch.cpuid_nent;
+	cpuid->nent = common->arch.cpuid_nent;
 	return 0;
 }
 
@@ -2089,10 +2100,11 @@ bool kvm_cpuid(struct kvm_vcpu *vcpu, u32 *eax, u32 *ebx,
 	       u32 *ecx, u32 *edx, bool exact_only)
 {
 	u32 orig_function = *eax, function = *eax, index = *ecx;
+	struct kvm_vcpu_common *common = vcpu->common;
 	struct kvm_cpuid_entry2 *entry;
 	bool exact, used_max_basic = false;
 
-	if (vcpu->arch.cpuid_dynamic_bits_dirty)
+	if (common->arch.cpuid_dynamic_bits_dirty)
 		kvm_update_cpuid_runtime(vcpu);
 
 	entry = kvm_find_cpuid_entry_index(vcpu, function, index);

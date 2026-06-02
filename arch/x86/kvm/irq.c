@@ -226,6 +226,7 @@ int kvm_set_msi(struct kvm_kernel_irq_routing_entry *e,
 		struct kvm *kvm, int irq_source_id, int level, bool line_status)
 {
 	struct kvm_lapic_irq irq;
+	struct kvm_plane *plane;
 
 	if (kvm_msi_route_invalid(kvm, e))
 		return -EINVAL;
@@ -234,8 +235,9 @@ int kvm_set_msi(struct kvm_kernel_irq_routing_entry *e,
 		return -1;
 
 	kvm_msi_to_lapic_irq(kvm, e, &irq);
+	plane = kvm->planes[e->msi.plane_level];
 
-	return kvm_irq_delivery_to_apic(kvm, NULL, &irq);
+	return kvm_irq_delivery_to_apic(plane, NULL, &irq);
 }
 
 int kvm_arch_set_irq_inatomic(struct kvm_kernel_irq_routing_entry *e,
@@ -258,7 +260,7 @@ int kvm_arch_set_irq_inatomic(struct kvm_kernel_irq_routing_entry *e,
 
 		kvm_msi_to_lapic_irq(kvm, e, &irq);
 
-		if (kvm_irq_delivery_to_apic_fast(kvm, NULL, &irq, &r))
+		if (kvm_irq_delivery_to_apic_fast(kvm->planes[e->msi.plane_level], NULL, &irq, &r))
 			return r;
 		break;
 
@@ -295,7 +297,8 @@ bool kvm_arch_can_set_irq_routing(struct kvm *kvm)
 
 int kvm_set_routing_entry(struct kvm *kvm,
 			  struct kvm_kernel_irq_routing_entry *e,
-			  const struct kvm_irq_routing_entry *ue)
+			  const struct kvm_irq_routing_entry *ue,
+			  unsigned plane_level)
 {
 	/* We can't check irqchip_in_kernel() here as some callers are
 	 * currently initializing the irqchip. Other callers should therefore
@@ -304,7 +307,7 @@ int kvm_set_routing_entry(struct kvm *kvm,
 	switch (ue->type) {
 #ifdef CONFIG_KVM_IOAPIC
 	case KVM_IRQ_ROUTING_IRQCHIP:
-		if (irqchip_split(kvm))
+		if (irqchip_split(kvm) || plane_level != 0)
 			return -EINVAL;
 		e->irqchip.pin = ue->u.irqchip.pin;
 		switch (ue->u.irqchip.irqchip) {
@@ -332,6 +335,7 @@ int kvm_set_routing_entry(struct kvm *kvm,
 		e->msi.address_lo = ue->u.msi.address_lo;
 		e->msi.address_hi = ue->u.msi.address_hi;
 		e->msi.data = ue->u.msi.data;
+		e->msi.plane_level = plane_level;
 
 		if (kvm_msi_route_invalid(kvm, e))
 			return -EINVAL;
@@ -398,7 +402,8 @@ void kvm_scan_ioapic_routes(struct kvm_vcpu *vcpu,
 		hlist_for_each_entry(entry, &table->map[i], link) {
 			struct kvm_lapic_irq irq;
 
-			if (entry->type != KVM_IRQ_ROUTING_MSI)
+			if (entry->type != KVM_IRQ_ROUTING_MSI ||
+			    entry->msi.plane_level != vcpu->plane_level)
 				continue;
 
 			kvm_msi_to_lapic_irq(vcpu->kvm, entry, &irq);
@@ -450,7 +455,7 @@ static int kvm_pi_update_irte(struct kvm_kernel_irqfd *irqfd,
 		 * if they have a single CPU as the destination, e.g. only if
 		 * the guest has affined the interrupt to a single vCPU.
 		 */
-		if (!kvm_intr_is_single_vcpu(kvm, &irq, &vcpu) ||
+		if (!kvm_intr_is_single_vcpu(kvm->planes[0], &irq, &vcpu) ||
 		    !kvm_irq_is_postable(&irq))
 			vcpu = NULL;
 	}
@@ -574,7 +579,7 @@ static const struct kvm_irq_routing_entry default_routing[] = {
 int kvm_setup_default_ioapic_and_pic_routing(struct kvm *kvm)
 {
 	return kvm_set_irq_routing(kvm, default_routing,
-				   ARRAY_SIZE(default_routing), 0);
+				   ARRAY_SIZE(default_routing), 0, 0);
 }
 
 int kvm_vm_ioctl_get_irqchip(struct kvm *kvm, struct kvm_irqchip *chip)

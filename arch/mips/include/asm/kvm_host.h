@@ -172,6 +172,18 @@ struct loongson_kvm_ipi {
 };
 #endif
 
+/* Per-plane state of VM */
+struct kvm_arch_plane {};
+
+static inline int kvm_arch_plane_init(struct kvm *kvm,
+				      struct kvm_plane *plane,
+				      unsigned plane_level)
+{
+	return 0;
+}
+
+static inline void kvm_arch_plane_destroy(struct kvm_plane *plane) {}
+
 struct kvm_arch {
 	/* Guest physical mm */
 	struct mm_struct gpa_mm;
@@ -181,6 +193,11 @@ struct kvm_arch {
 	struct loongson_kvm_ipi ipi;
 #endif
 };
+
+struct kvm_vcpu_arch_common {};
+
+static inline int kvm_arch_vcpu_common_init(struct kvm_vcpu_common *common) { return 0; }
+static inline void kvm_arch_vcpu_common_destroy(struct kvm_vcpu_common *common) {}
 
 #define N_MIPS_COPROC_REGS	32
 #define N_MIPS_COPROC_SEL	8

@@ -116,6 +116,18 @@ struct kvm_phyid_map {
 	struct kvm_phyid_info phys_map[KVM_MAX_PHYID];
 };
 
+/* Per-plane state of VM */
+struct kvm_arch_plane {};
+
+static inline int kvm_arch_plane_init(struct kvm *kvm,
+				      struct kvm_plane *plane,
+				      unsigned plane_level)
+{
+	return 0;
+}
+
+static inline void kvm_arch_plane_destroy(struct kvm_plane *plane) {}
+
 struct kvm_arch {
 	/* Guest physical mm */
 	kvm_pte_t *pgd;
@@ -137,6 +149,11 @@ struct kvm_arch {
 	struct loongarch_eiointc *eiointc;
 	struct loongarch_pch_pic *pch_pic;
 };
+
+struct kvm_vcpu_arch_common {};
+
+static inline int kvm_arch_vcpu_common_init(struct kvm_vcpu_common *common) { return 0; }
+static inline void kvm_arch_vcpu_common_destroy(struct kvm_vcpu_common *common) {}
 
 #define CSR_MAX_NUMS		0x800
 

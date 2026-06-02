@@ -2339,13 +2339,13 @@ int kvm_s390_cpus_from_pv(struct kvm *kvm, u16 *rc, u16 *rrc)
 	 * We want to return the first failure rc and rrc, though.
 	 */
 	kvm_for_each_vcpu(i, vcpu, kvm) {
-		mutex_lock(&vcpu->mutex);
+		kvm_vcpu_lock(vcpu);
 		if (kvm_s390_pv_destroy_cpu(vcpu, &_rc, &_rrc) && !ret) {
 			*rc = _rc;
 			*rrc = _rrc;
 			ret = -EIO;
 		}
-		mutex_unlock(&vcpu->mutex);
+		kvm_vcpu_unlock(vcpu);
 	}
 	/* Ensure that we re-enable gisa if the non-PV guest used it but the PV guest did not. */
 	if (use_gisa)
@@ -2377,9 +2377,9 @@ static int kvm_s390_cpus_to_pv(struct kvm *kvm, u16 *rc, u16 *rrc)
 		kvm_s390_gisa_disable(kvm);
 
 	kvm_for_each_vcpu(i, vcpu, kvm) {
-		mutex_lock(&vcpu->mutex);
+		kvm_vcpu_lock(vcpu);
 		r = kvm_s390_pv_create_cpu(vcpu, rc, rrc);
-		mutex_unlock(&vcpu->mutex);
+		kvm_vcpu_unlock(vcpu);
 		if (r)
 			break;
 	}
@@ -3163,6 +3163,24 @@ static void sca_dispose(struct kvm *kvm)
 {
 	free_pages_exact(kvm->arch.sca, sizeof(*kvm->arch.sca));
 	kvm->arch.sca = NULL;
+}
+
+unsigned kvm_arch_max_planes(struct kvm *kvm)
+{
+	return 1;
+}
+
+struct kvm_plane *kvm_alloc_plane(void)
+{
+	/* For better type checking, do not return kzalloc() value directly */
+	struct kvm_plane *plane = kzalloc(sizeof(*plane), GFP_KERNEL_ACCOUNT);
+
+	return plane;
+}
+
+void kvm_free_plane(struct kvm_plane *plane)
+{
+	kfree(plane);
 }
 
 void kvm_arch_free_vm(struct kvm *kvm)
@@ -4933,7 +4951,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 	if (vcpu->kvm->arch.pv.dumping)
 		return -EINVAL;
 
-	if (!vcpu->wants_to_run)
+	if (!kvm_vcpu_wants_to_run(vcpu))
 		return -EINTR;
 
 	if (kvm_run->kvm_valid_regs & ~KVM_SYNC_S390_VALID_FIELDS ||
