@@ -119,10 +119,11 @@ u64 __read_mostly efer_reserved_bits = ~((u64)(EFER_SCE | EFER_LME | EFER_LMA));
 static u64 __read_mostly efer_reserved_bits = ~((u64)EFER_SCE);
 #endif
 
-#define KVM_EXIT_HYPERCALL_VALID_MASK (BIT(KVM_HC_MAP_GPA_RANGE) | \
-					 BIT(KVM_HC_VM_PLANES_CONFIG) | \
-					 BIT(KVM_HC_VM_PLANES_ACTIVATE) | \
-					 BIT(KVM_HC_VBS_VTL_CALL))
+#define KVM_EXIT_HYPERCALL_VALID_MASK		\
+	((1 << KVM_HC_MAP_GPA_RANGE)		|	\
+	 (1 << KVM_HC_VM_PLANES_CONFIG)		|	\
+	 (1 << KVM_HC_VM_PLANES_ACTIVATE)	|	\
+	 (1 << KVM_HC_VBS_VTL_CALL))
 
 #define KVM_CAP_PMU_VALID_MASK KVM_PMU_CAP_DISABLE
 
@@ -478,7 +479,7 @@ static unsigned int num_msr_based_features;
 
 unsigned kvm_x86_default_max_planes(struct kvm *kvm)
 {
-	return 1;
+	return 2;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_x86_default_max_planes);
 
