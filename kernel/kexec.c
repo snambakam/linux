@@ -16,6 +16,7 @@
 #include <linux/syscalls.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
+#include <linux/vbs.h>
 
 #include "kexec_internal.h"
 
@@ -205,6 +206,15 @@ static inline int kexec_load_check(unsigned long nr_segments,
 	int image_type = (flags & KEXEC_ON_CRASH) ?
 			 KEXEC_TYPE_CRASH : KEXEC_TYPE_DEFAULT;
 	int result;
+	bool crash_kexec = !!(flags & KEXEC_ON_CRASH);
+
+	/*
+	 * Legacy kexec_load accepts raw memory segments and bypasses the
+	 * file-based VBS validation path. Reject non-crash usage when VBS
+	 * is active to prevent untrusted payload staging.
+	 */
+	if (vbs_available() && !crash_kexec)
+		return -EKEYREJECTED;
 
 	/* We only trust the superuser with rebooting the system. */
 	if (!kexec_load_permitted(image_type))
