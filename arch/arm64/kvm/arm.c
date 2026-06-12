@@ -744,7 +744,7 @@ nommu:
 	if (!cpumask_test_cpu(cpu, vcpu->kvm->arch.supported_cpus))
 		vcpu_set_on_unsupported_cpu(vcpu);
 
-	vcpu->arch.pid = pid_nr(vcpu->pid);
+	vcpu->arch.pid = pid_nr(vcpu->common->pid);
 }
 
 void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
@@ -1822,6 +1822,11 @@ static int kvm_arm_vcpu_set_events(struct kvm_vcpu *vcpu,
 			return -EINVAL;
 
 	return __kvm_arm_vcpu_set_events(vcpu, events);
+}
+
+bool kvm_arch_is_vcpu_plane_ioctl(unsigned ioctl)
+{
+	return false;
 }
 
 long kvm_arch_vcpu_ioctl(struct file *filp,

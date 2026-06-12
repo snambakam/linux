@@ -5323,8 +5323,10 @@ static void svm_free_plane(struct kvm_plane *plane)
 
 static unsigned svm_max_planes(struct kvm *kvm)
 {
+#ifdef CONFIG_KVM_AMD_SEV
 	if (____sev_snp_guest(kvm))
 		return sev_snp_max_planes(kvm);
+#endif
 
 	return kvm_x86_default_max_planes(kvm);
 }
