@@ -2599,10 +2599,23 @@ static int kvm_vm_ioctl_clear_dirty_log(struct kvm *kvm,
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
 static u64 kvm_supported_mem_attributes(struct kvm *kvm)
 {
-	if (!kvm || kvm_arch_has_private_mem(kvm))
-		return KVM_MEMORY_ATTRIBUTE_PRIVATE;
+	u64 attrs = 0;
 
-	return 0;
+	if (!kvm || kvm_arch_has_private_mem(kvm))
+		attrs |= KVM_MEMORY_ATTRIBUTE_PRIVATE;
+
+#ifdef CONFIG_VM_PLANES
+	/*
+	 * Cross-plane EPT protection: a higher-privilege plane may restrict
+	 * a lower plane's access via NO_WRITE / NO_EXEC (e.g. HEKI sealing
+	 * plane-0 kernel text and rodata).  The enforcement path lives in
+	 * kvm_plane_filter_pte_access(); advertise the attributes here so
+	 * KVM_SET_MEMORY_ATTRIBUTES accepts them.
+	 */
+	attrs |= KVM_MEMORY_ATTRIBUTE_NO_WRITE | KVM_MEMORY_ATTRIBUTE_NO_EXEC;
+#endif
+
+	return attrs;
 }
 
 /*
@@ -2712,8 +2725,8 @@ static bool kvm_pre_set_memory_attributes(struct kvm *kvm,
 }
 
 /* Set @attributes for the gfn range [@start, @end). */
-static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
-				     unsigned long attributes)
+int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
+			      unsigned long attributes)
 {
 	struct kvm_mmu_notifier_range pre_set_range = {
 		.start = start,
