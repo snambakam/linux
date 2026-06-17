@@ -25,7 +25,6 @@ static bool __initdata enable_vm_planes_requested;
 struct vm_plane_parse_state {
 	phys_addr_t load_offset;
 	phys_addr_t memory_size;
-	unsigned int vcpu_count;
 	unsigned int kernel_format;
 	char kernel[VM_PLANE_KERNEL_NAME_MAX];
 	char cmdline[VM_PLANE_CMDLINE_MAX];
@@ -275,14 +274,6 @@ static int __init parse_plane_cfg_line(const char *line, size_t len,
 		return 0;
 	}
 
-	if (!strcmp(key, "VCPU_COUNT")) {
-		if (parsed_u64 == 0 || parsed_u64 > UINT_MAX)
-			return -EINVAL;
-		plane_cfg[plane_id].vcpu_count = (unsigned int)parsed_u64;
-		state[plane_id].vcpu_count = (unsigned int)parsed_u64;
-		return 0;
-	}
-
 	return -ENOENT;
 }
 
@@ -314,7 +305,6 @@ static int __init parse_vm_planes_kconfig(const char *buf, size_t len,
 	for (i = 0; i < *plane_count; i++) {
 		state[i].load_offset = VM_PLANES_UNSET_VALUE;
 		state[i].memory_size = VM_PLANES_UNSET_VALUE;
-		state[i].vcpu_count = 0;
 		state[i].kernel[0] = '\0';
 		state[i].cmdline[0] = '\0';
 	}
@@ -336,7 +326,6 @@ static int __init parse_vm_planes_kconfig(const char *buf, size_t len,
 	for (i = 1; i < *plane_count; i++) {
 		if (state[i].load_offset == VM_PLANES_UNSET_VALUE ||
 		    state[i].memory_size == VM_PLANES_UNSET_VALUE ||
-		    !state[i].vcpu_count ||
 		    !state[i].kernel[0])
 			return -EINVAL;
 	}
