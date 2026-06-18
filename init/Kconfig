@@ -1706,8 +1706,9 @@ config VM_PLANES
 	  Enable hypervisor enabled multi-kernel support.
 
 	  This allows processing the kernel command-line parameter
-	  "enable-vm-planes" and, when requested, calling
-	  arch_init_vm_planes() during start_kernel().
+	  "enable-vm-planes" and, when requested, setting up the configured
+	  planes from a rootfs_initcall (after the initramfs is populated and
+	  before device drivers and late_initcalls run).
 
 	  The initrd config-vm-planes file is expected to provide per-plane
 	  entries for PLANE_<id>_KERNEL, PLANE_<id>_LOAD_OFFSET, and
