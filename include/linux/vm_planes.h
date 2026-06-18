@@ -25,7 +25,6 @@ struct vm_plane_config {
 	char cmdline[VM_PLANE_CMDLINE_MAX];
 };
 
-void __init arch_init_vm_planes(void);
 int __init load_vm_plane_kernels(unsigned int plane_count,
 				 struct vm_plane_config *plane_cfg);
 
