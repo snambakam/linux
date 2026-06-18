@@ -4372,6 +4372,7 @@ static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id
 {
 	struct kvm *kvm = plane->kvm;
 	struct kvm_vcpu *vcpu;
+	struct kvm_vcpu *prev_current_vcpu;
 	int r;
 
 	mutex_lock(&kvm->lock);
@@ -4416,7 +4417,25 @@ static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id
 
 	kvm_vcpu_init(vcpu, kvm, id);
 
+	/*
+	 * For planes above plane-0 the vCPU shares plane-0's kvm_vcpu_common,
+	 * including ->current_vcpu and the preempt notifier consulted by
+	 * kvm_sched_in()/kvm_sched_out().  kvm_arch_vcpu_create() (and
+	 * kvm_arch_vcpu_postcreate() below) load this vCPU's VMCS via
+	 * vcpu_load() but do not update ->current_vcpu, which still points at
+	 * plane-0's vCPU.  The arch create path performs GFP_KERNEL
+	 * allocations, so the creating task can sleep and be rescheduled while
+	 * this vCPU's VMCS is loaded; the shared notifier would then
+	 * save/restore plane-0's vCPU and desync the per-CPU loaded_vmcs
+	 * tracking from the hardware-current VMCS, wedging VMX (host hard
+	 * lockup).  Mirror the run loop's invariant (see
+	 * kvm_vcpu_select_plane()): make ->current_vcpu the vCPU whose VMCS is
+	 * loaded for the duration, then restore it.
+	 */
+	prev_current_vcpu = vcpu->common->current_vcpu;
+	vcpu->common->current_vcpu = vcpu;
 	r = kvm_arch_vcpu_create(vcpu);
+	vcpu->common->current_vcpu = prev_current_vcpu;
 	if (r)
 		goto vcpu_free_common;
 
@@ -4445,7 +4464,11 @@ static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id
 	kvm_vcpu_unlock(vcpu);
 
 	mutex_unlock(&kvm->lock);
+	/* Same VMCS/current_vcpu invariant as above (vcpu_load in postcreate). */
+	prev_current_vcpu = vcpu->common->current_vcpu;
+	vcpu->common->current_vcpu = vcpu;
 	kvm_arch_vcpu_postcreate(vcpu);
+	vcpu->common->current_vcpu = prev_current_vcpu;
 	kvm_create_vcpu_debugfs(vcpu);
 	return r;
 
