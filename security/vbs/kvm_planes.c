@@ -25,6 +25,7 @@
 #include <linux/kvm_para.h>
 #include <linux/module.h>
 #include <linux/string.h>
+#include <linux/workqueue.h>
 #include <linux/elf.h>
 #include <asm/sections.h>
 #include <asm/kvm_para.h>
@@ -59,28 +60,34 @@ static void *kvm_ca_page;	/* single calling-area page		*/
 
 /* ── low-level VTL call ───────────────────────────────────────────────── */
 
-static int kvm_planes_vtl_call(enum vbs_call_id id,
-			       const void *arg, size_t arg_size,
-			       void *resp, size_t resp_size)
+struct kvm_vtl_call_ctx {
+	enum vbs_call_id id;
+	const void	*arg;
+	size_t		arg_size;
+	void		*resp;
+	size_t		resp_size;
+};
+
+/*
+ * Issue the VTL call hypercall.  MUST run on the BSP (CPU0): KVM switches
+ * planes per logical CPU (the secure sibling is common->vcpus[1] of the
+ * *calling* CPU), and the secure plane is a single in-guest kernel that
+ * boots only on CPU0's sibling.  Driven via work_on_cpu() so the hypercall
+ * always lands on CPU0 regardless of the caller's CPU.
+ */
+static long kvm_planes_vtl_call_on_cpu(void *data)
 {
-	struct vbs_kvm_ca *ca;
+	struct kvm_vtl_call_ctx *ctx = data;
+	struct vbs_kvm_ca *ca = kvm_ca_page;
 	long hc_ret;
 
-	if (!kvm_ca_page)
-		return -ENOMEM;
-
-	if (arg_size > VBS_CA_BUF_SIZE)
-		return -E2BIG;
-
-	ca = kvm_ca_page;
-
 	/* Build request */
-	ca->call_id  = id;
-	ca->arg_size = arg_size;
+	ca->call_id  = ctx->id;
+	ca->arg_size = ctx->arg_size;
 	ca->status   = 0;
 	ca->resp_size = 0;
-	if (arg_size && arg)
-		memcpy(ca->buffer, arg, arg_size);
+	if (ctx->arg_size && ctx->arg)
+		memcpy(ca->buffer, ctx->arg, ctx->arg_size);
 	ca->call_pending = 1;
 
 	/* Issue hypercall: pass physical address of the calling area */
@@ -97,12 +104,34 @@ static int kvm_planes_vtl_call(enum vbs_call_id id,
 		return ca->status;
 
 	/* Read response from the same buffer */
-	if (resp && resp_size && ca->resp_size) {
-		size_t copy = min_t(size_t, resp_size, ca->resp_size);
+	if (ctx->resp && ctx->resp_size && ca->resp_size) {
+		size_t copy = min_t(size_t, ctx->resp_size, ca->resp_size);
 
-		memcpy(resp, ca->buffer, copy);
+		memcpy(ctx->resp, ca->buffer, copy);
 	}
 	return 0;
+}
+
+static int kvm_planes_vtl_call(enum vbs_call_id id,
+			       const void *arg, size_t arg_size,
+			       void *resp, size_t resp_size)
+{
+	struct kvm_vtl_call_ctx ctx = {
+		.id        = id,
+		.arg       = arg,
+		.arg_size  = arg_size,
+		.resp      = resp,
+		.resp_size = resp_size,
+	};
+
+	if (!kvm_ca_page)
+		return -ENOMEM;
+
+	if (arg_size > VBS_CA_BUF_SIZE)
+		return -E2BIG;
+
+	/* Pin the plane switch to CPU0's secure sibling (the only booted one). */
+	return work_on_cpu(0, kvm_planes_vtl_call_on_cpu, &ctx);
 }
 
 /* ── memory protection ────────────────────────────────────────────────── */
