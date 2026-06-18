@@ -13,6 +13,21 @@ menuconfig VIRT_DRIVERS
 
 if VIRT_DRIVERS
 
+config VBS_PARK
+	bool "KVM VM-planes secure-plane park loop"
+	depends on X86 && KVM_GUEST
+	help
+	  Minimal in-kernel handler for the secure plane (plane >0) of a KVM
+	  VM-planes guest.  When enabled and the "vbs_park" kernel command-line
+	  option is present, a kernel thread hands control back to the normal
+	  plane via the KVM_HC_VBS_VTL_RETURN hypercall and then services VTL
+	  calls from a shared calling area.
+
+	  This is independent of the full VBS/HEKI stack (CONFIG_VBS): it
+	  implements only the park/dispatch handshake so that any secure kernel
+	  can act as plane 1.  Calls are acknowledged as no-ops.  Say N unless
+	  this kernel is used as a VM-planes secure plane.
+
 config VMGENID
 	tristate "Virtual Machine Generation ID driver"
 	default y
