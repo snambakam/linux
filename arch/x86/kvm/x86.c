@@ -10563,9 +10563,145 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 		vcpu->arch.complete_userspace_io = complete_hypercall;
 		return 0;
 	}
+	case KVM_HC_VBS_VTL_CALL:
+#ifdef CONFIG_VM_PLANES
+		/*
+		 * Runtime VBS/VTL call from the normal world (plane 0) into the
+		 * secure plane.  Serviced in-kernel by switching to the secure
+		 * plane (plane 1) — no userspace round trip.  This is
+		 * arch-neutral: it works for both Intel (VMX) and AMD (SVM), and
+		 * mirrors the SEV-SNP in-kernel VMPL switch.  a0 carries the
+		 * guest-physical address of the shared calling area.
+		 *
+		 * Two cases:
+		 *  - Secure plane already booted and parked in its dispatch loop
+		 *    (vtl_plane_ready): deliver the calling-area GPA directly in
+		 *    RAX (its pending VTL return value) and switch to it.
+		 *  - Secure plane not booted yet (bootstrap): record the call as
+		 *    pending and switch to the secure plane so it boots; it will
+		 *    pick up the pending GPA when it reaches its first VTL return.
+		 *
+		 * If there is no secure plane configured at all, fall through to
+		 * the userspace path so QEMU can service the call.
+		 */
+		if (vcpu->plane_level == 0) {
+			struct kvm_vcpu_common *common = vcpu->common;
+			struct kvm_vcpu *secure = common->vcpus[1];
+
+			if (secure) {
+				common->vtl_call_ca = a0;
+
+				if (common->vtl_plane_ready) {
+					/* Parked in vtl_return: deliver now. */
+					kvm_rax_write_raw(secure, a0);
+					common->vtl_call_pending = false;
+				} else {
+					/* Still booting: deliver on readiness. */
+					common->vtl_call_pending = true;
+				}
+
+				if (kvm_vcpu_switch_plane(vcpu, secure) == 1) {
+					ret = 0;
+					goto out;
+				}
+				ret = -KVM_EINVAL;
+				goto out;
+			}
+		}
+#endif /* CONFIG_VM_PLANES */
+		goto vtl_userspace_exit;
+	case KVM_HC_VBS_VTL_RETURN:
+#ifdef CONFIG_VM_PLANES
+		/*
+		 * The secure plane (plane >0) hands control back to plane 0
+		 * in-kernel.  This covers three situations:
+		 *  - Bootstrap "ready": the secure plane has just booted and is
+		 *    issuing its first VTL return to announce it is parked.
+		 *  - Normal completion: it has finished servicing a VTL call;
+		 *    the result is already in the shared calling area.
+		 *  - A call that arrived while the secure plane was still booting
+		 *    is now delivered (vtl_call_pending) by returning its
+		 *    calling-area GPA in RAX and keeping the secure plane running.
+		 * a0 is an optional status carried for tracing only.
+		 */
+		if (vcpu->plane_level == 0) {
+			ret = -KVM_EPERM;
+			goto out;
+		} else {
+			struct kvm_vcpu_common *common = vcpu->common;
+
+			common->vtl_plane_ready = true;
+
+			if (common->vtl_call_pending) {
+				/*
+				 * Deliver the call that triggered the secure
+				 * plane's boot: return its calling-area GPA and
+				 * stay in the secure plane to service it.  The
+				 * GPA is delivered as this hypercall's return
+				 * value (RAX) via the normal completion path; do
+				 * not write RAX directly here, as the completion
+				 * handler would overwrite it with hypercall.ret.
+				 */
+				common->vtl_call_pending = false;
+				ret = common->vtl_call_ca;
+				goto out;
+			}
+
+			if (kvm_vcpu_switch_plane(vcpu, common->vcpus[0]) == 1) {
+				ret = 0;
+				goto out;
+			}
+		}
+#endif /* CONFIG_VM_PLANES */
+		ret = -KVM_EINVAL;
+		goto out;
+	case KVM_HC_VBS_SET_MEM_ATTRS:
+#if defined(CONFIG_VM_PLANES) && defined(CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES)
+		/*
+		 * The secure plane (plane >0) enforces EPT permissions on the
+		 * normal plane's memory.  It cannot issue the host
+		 * KVM_SET_MEMORY_ATTRIBUTES ioctl, so it asks KVM to do it via
+		 * this hypercall.  Only a higher-privilege plane may call it.
+		 *
+		 *   a0 = guest-physical address (page aligned)
+		 *   a1 = region size in bytes  (page aligned)
+		 *   a2 = access bits to retain for lower planes:
+		 *        bit0 read (implicit), bit1 write, bit2 exec
+		 *        (matches VBS_MEM_READ/WRITE/EXEC)
+		 */
+		if (vcpu->plane_level == 0) {
+			ret = -KVM_EPERM;
+			goto out;
+		}
+
+		if (!PAGE_ALIGNED(a0) || !PAGE_ALIGNED(a1) || a1 == 0 ||
+		    a0 + a1 < a0) {
+			ret = -KVM_EINVAL;
+			goto out;
+		} else {
+			unsigned long attrs = 0;
+			gfn_t start = a0 >> PAGE_SHIFT;
+			gfn_t end = (a0 + a1) >> PAGE_SHIFT;
+
+			if (!(a2 & BIT(1)))
+				attrs |= KVM_MEMORY_ATTRIBUTE_NO_WRITE;
+			if (!(a2 & BIT(2)))
+				attrs |= KVM_MEMORY_ATTRIBUTE_NO_EXEC;
+
+			if (kvm_vm_set_mem_attributes(vcpu->kvm, start, end,
+						      attrs))
+				ret = -KVM_EINVAL;
+			else
+				ret = 0;
+			goto out;
+		}
+#else
+		ret = -KVM_ENOSYS;
+		goto out;
+#endif /* CONFIG_VM_PLANES && CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES */
 	case KVM_HC_VM_PLANES_CONFIG:
 	case KVM_HC_VM_PLANES_ACTIVATE:
-	case KVM_HC_VBS_VTL_CALL: {
+	vtl_userspace_exit:
 		ret = -KVM_ENOSYS;
 		if (!user_exit_on_hypercall(vcpu->kvm, nr))
 			break;
@@ -10584,7 +10720,6 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 		WARN_ON_ONCE(vcpu->run->hypercall.flags & KVM_EXIT_HYPERCALL_MBZ);
 		vcpu->arch.complete_userspace_io = complete_hypercall;
 		return 0;
-	}
 	default:
 		ret = -KVM_ENOSYS;
 		break;
