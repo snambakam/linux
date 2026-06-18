@@ -454,6 +454,7 @@ struct kvm_vcpu {
 
 void kvm_vcpu_set_plane_runnable(struct kvm_vcpu *vcpu);
 void kvm_vcpu_set_plane_stopped(struct kvm_vcpu *vcpu);
+int kvm_vcpu_switch_plane(struct kvm_vcpu *vcpu, struct kvm_vcpu *target);
 struct kvm_vcpu *kvm_vcpu_select_plane(struct kvm_vcpu *vcpu);
 
 static inline bool kvm_vcpu_wants_to_run(struct kvm_vcpu *vcpu)
