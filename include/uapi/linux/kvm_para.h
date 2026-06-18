@@ -33,6 +33,8 @@
 #define KVM_HC_VM_PLANES_CONFIG		13
 #define KVM_HC_VM_PLANES_ACTIVATE	14
 #define KVM_HC_VBS_VTL_CALL		15
+#define KVM_HC_VBS_VTL_RETURN		16
+#define KVM_HC_VBS_SET_MEM_ATTRS	17
 
 /*
  * hypercalls use architecture specific
