@@ -6,12 +6,15 @@
 ccflags-y := -fno-function-sections -fno-data-sections
 
 obj-y                          := main.o version.o mounts.o
-obj-y                          += vm_planes.o
 ifneq ($(CONFIG_BLK_DEV_INITRD),y)
 obj-y                          += noinitramfs.o
 else
 obj-$(CONFIG_BLK_DEV_INITRD)   += initramfs.o
 endif
+# vm_planes.o must link AFTER initramfs.o so that, at rootfs_initcall level,
+# populate_rootfs() (which unpacks the initramfs) runs before
+# arch_init_vm_planes() reads the plane config and kernels from the rootfs.
+obj-y                          += vm_planes.o
 obj-$(CONFIG_GENERIC_CALIBRATE_DELAY) += calibrate.o
 obj-$(CONFIG_INITRAMFS_TEST)   += initramfs_test.o
 

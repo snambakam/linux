@@ -12,9 +12,9 @@
 #include <linux/vm_planes.h>
 #include <linux/elf.h>
 #include <linux/mm.h>
+#include <linux/io.h>
 #include <asm/cpu.h>
 #include <asm/kvm_para.h>
-#include <asm-generic/early_ioremap.h>
 
 #ifdef CONFIG_VM_PLANES
 static bool __initdata enable_vm_planes_requested;
@@ -360,44 +360,29 @@ static int __init vm_planes_get_cfg(unsigned int *plane_count,
 static int __init copy_to_early_mem(phys_addr_t dest, const void *src,
 				    unsigned long size)
 {
-	unsigned long slop, clen;
-	char *p;
+	void *p;
 
-	while (size) {
-		slop = offset_in_page(dest);
-		clen = size;
-		if (clen > PAGE_SIZE - slop)
-			clen = PAGE_SIZE - slop;
-		p = early_memremap(dest & PAGE_MASK, clen + slop);
-		if (!p)
-			return -ENOMEM;
-		memcpy(p + slop, src, clen);
-		early_memunmap(p, clen + slop);
-		dest += clen;
-		src += clen;
-		size -= clen;
-	}
+	if (!size)
+		return 0;
+	p = memremap(dest, size, MEMREMAP_WB);
+	if (!p)
+		return -ENOMEM;
+	memcpy(p, src, size);
+	memunmap(p);
 	return 0;
 }
 
 static int __init zero_early_mem(phys_addr_t dest, unsigned long size)
 {
-	unsigned long slop, clen;
-	char *p;
+	void *p;
 
-	while (size) {
-		slop = offset_in_page(dest);
-		clen = size;
-		if (clen > PAGE_SIZE - slop)
-			clen = PAGE_SIZE - slop;
-		p = early_memremap(dest & PAGE_MASK, clen + slop);
-		if (!p)
-			return -ENOMEM;
-		memset(p + slop, 0, clen);
-		early_memunmap(p, clen + slop);
-		dest += clen;
-		size -= clen;
-	}
+	if (!size)
+		return 0;
+	p = memremap(dest, size, MEMREMAP_WB);
+	if (!p)
+		return -ENOMEM;
+	memset(p, 0, size);
+	memunmap(p);
 	return 0;
 }
 
@@ -616,23 +601,41 @@ int __init __weak alloc_vm_planes(unsigned int plane_count,
 int __init __weak activate_vm_planes(unsigned int plane_count,
 				      struct vm_plane_config *plane_cfg) { return -ENOSYS; }
 
-void __init arch_init_vm_planes(void)
+/*
+ * Set up VM planes during boot.
+ *
+ * This must run after the initramfs is populated (it reads the plane config
+ * and plane kernels from the rootfs) and, crucially, *before* any consumer
+ * that issues a plane switch -- in particular the VBS backend init/seal, and
+ * before any device driver, module, or userspace can touch a plane.  A
+ * rootfs_initcall satisfies all of these: it runs immediately after
+ * populate_rootfs() (initramfs ready) and before every device_initcall and
+ * late_initcall.  Because init/ links before security/, this also runs before
+ * the VBS probe/HEKI rootfs_initcalls, so the secure plane vcpu exists by the
+ * time the first VTL call is issued.
+ */
+static int __init arch_init_vm_planes(void)
 {
 	unsigned int plane_count = VM_PLANES_DEFAULT_COUNT;
 	struct vm_plane_config *plane_cfg;
 	int ret;
 
 	if (!enable_vm_planes_requested)
-		return;
+		return 0;
 
-	if (!kvm_para_available())
-		return;
+	/* Ensure any asynchronous initramfs unpacking has completed. */
+	wait_for_initramfs();
+
+	if (!kvm_para_available()) {
+		pr_info("vm_planes: KVM paravirt unavailable, skipping plane setup\n");
+		return 0;
+	}
 
 	ret = vm_planes_get_cfg(&plane_count, &plane_cfg);
 	if (ret) {
 		pr_warn("vm_planes: failed to parse %s: %d\n",
 			VM_PLANES_CONFIG_FILE, ret);
-		return;
+		return 0;
 	}
 
 	pr_info("vm_planes: enabling %u planes (ids 0..%u)\n",
@@ -641,18 +644,21 @@ void __init arch_init_vm_planes(void)
 	ret = alloc_vm_planes(plane_count, plane_cfg);
 	if (ret) {
 		pr_err("vm_planes: failed to allocate planes: %d\n", ret);
-		return;
+		return 0;
 	}
 
 	ret = load_vm_plane_kernels(plane_count, plane_cfg);
 	if (ret) {
 		pr_err("vm_planes: failed to load plane kernels: %d\n", ret);
-		return;
+		return 0;
 	}
 
 	ret = activate_vm_planes(plane_count, plane_cfg);
 	if (ret)
 		pr_err("vm_planes: failed to activate planes: %d\n", ret);
+
+	return 0;
 }
+rootfs_initcall(arch_init_vm_planes);
 
 #endif /* CONFIG_VM_PLANES */
