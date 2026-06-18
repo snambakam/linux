@@ -386,6 +386,23 @@ struct kvm_vcpu_common {
 
 	bool plane_switch;
 
+#ifdef CONFIG_VM_PLANES
+	/*
+	 * VBS/VTL secure-plane bootstrap state (per logical CPU).
+	 *
+	 * @vtl_plane_ready: the secure plane has booted and parked itself in
+	 *                   its dispatch loop (issued its first VTL return).
+	 * @vtl_call_pending: a normal-plane VTL call has been registered but
+	 *                    not yet delivered to the secure plane (used while
+	 *                    the secure plane is still booting).
+	 * @vtl_call_ca:      guest-physical address of the pending call's
+	 *                    shared calling area.
+	 */
+	bool vtl_plane_ready;
+	bool vtl_call_pending;
+	u64 vtl_call_ca;
+#endif
+
 	struct kvm_vcpu_arch_common arch;
 };
 
