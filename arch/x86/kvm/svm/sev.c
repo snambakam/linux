@@ -4507,21 +4507,20 @@ static int __sev_snp_run_vmpl(struct vcpu_svm *svm, unsigned int vmpl)
 {
 	struct kvm_vcpu *vcpu = &svm->vcpu;
 	struct kvm_vcpu *target = vcpu->common->vcpus[vmpl];
-	struct vcpu_svm *target_svm = to_svm(target);
+	struct vcpu_svm *target_svm;
 
 	if (!target)
 		return -EINVAL;
 
-	/* Mark current plane as stopped so it is not selected */
+	target_svm = to_svm(target);
+
+	/* SEV-specific preparation for the target VMPL before switching. */
 	kvm_set_mp_state(target, KVM_MP_STATE_RUNNABLE);
 	/* In case KVM_REQ_UPDATE_PROTECTED_GUEST_STATE is set - mark the new VMSA as runnable */
 	target_svm->sev_es.snp_ap_runnable = true;
-	kvm_vcpu_set_plane_runnable(target);
-	kvm_vcpu_set_plane_stopped(vcpu);
 
-	kvm_make_request(KVM_REQ_PLANE_RESCHED, vcpu);
-
-	return 1;
+	/* Perform the arch-neutral in-kernel plane switch. */
+	return kvm_vcpu_switch_plane(vcpu, target);
 }
 
 static int sev_snp_run_vmpl(struct vcpu_svm *svm)

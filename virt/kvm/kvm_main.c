@@ -5039,6 +5039,33 @@ void kvm_vcpu_set_plane_stopped(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_set_plane_stopped);
 
+/*
+ * Switch the logical CPU from the currently-running plane (@vcpu) to a sibling
+ * plane (@target) without leaving KVM_RUN.  Both vCPUs share the same
+ * vcpu->common, so this only flips the per-plane runnable/stopped state and
+ * requests a plane reschedule; the run loop in kvm_arch_vcpu_ioctl_run() then
+ * re-selects @target via kvm_vcpu_select_plane() and re-enters the guest.
+ *
+ * This is the arch-neutral core of the in-kernel plane switch shared by all
+ * secure-plane backends (SEV-SNP VMPL, VBS/VTL on Intel and AMD, and, in the
+ * future, Arm stage-2).  Any vendor-specific state preparation must be done by
+ * the caller before invoking this helper.
+ *
+ * Returns 1 to keep the caller inside KVM_RUN, or -EINVAL if @target is not a
+ * valid sibling plane of @vcpu.
+ */
+int kvm_vcpu_switch_plane(struct kvm_vcpu *vcpu, struct kvm_vcpu *target)
+{
+	if (!target || target->common != vcpu->common)
+		return -EINVAL;
+
+	kvm_vcpu_set_plane_runnable(target);
+	kvm_vcpu_set_plane_stopped(vcpu);
+
+	return 1;
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_switch_plane);
+
 struct kvm_vcpu *kvm_vcpu_select_plane(struct kvm_vcpu *vcpu)
 {
 	struct kvm_vcpu_common *common = vcpu->common;
