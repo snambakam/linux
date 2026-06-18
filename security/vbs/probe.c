@@ -96,8 +96,9 @@ static int __init vbs_probe_init(void)
 }
 
 /*
- * Run at device_initcall level: platform detection (CPUID, MSRs, SMCCC)
- * is complete by this point, but subsystems that consume VBS (module
- * loading, HEKI) have not yet started.
+ * Run at rootfs_initcall level: platform detection (CPUID, MSRs, SMCCC)
+ * is complete by this point, the VM planes have been set up (init/ links
+ * before security/), and subsystems that consume VBS (module loading, HEKI,
+ * device drivers, userspace) have not yet started.
  */
-device_initcall(vbs_probe_init);
+rootfs_initcall(vbs_probe_init);

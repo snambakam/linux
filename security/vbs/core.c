@@ -195,4 +195,11 @@ static int __init vbs_heki_late_init(void)
 
 	return 0;
 }
-late_initcall(vbs_heki_late_init);
+/*
+ * Run at rootfs_initcall level (after vbs_probe_init in probe.o, which links
+ * first) so the kernel is sealed before any device driver, module, or
+ * userspace runs.  The secure plane vcpu already exists by this point because
+ * arch_init_vm_planes() (init/, links before security/) ran earlier in the
+ * same initcall level.
+ */
+rootfs_initcall(vbs_heki_late_init);
