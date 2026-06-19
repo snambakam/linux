@@ -1,31 +1,41 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * vbs_park - minimal KVM VM-planes secure-plane park loop
+ * secure_monitor - KVM VM-planes secure-plane monitor
  *
- * This provides only the secure-plane (plane >0) side of the VM-planes
- * park/dispatch handshake so that an otherwise ordinary kernel can act as
- * plane 1.  It is deliberately independent of the full VBS/HEKI stack
- * (CONFIG_VBS): it implements no security policy.  Its single job is to hand
- * control back to the normal plane (plane 0) via the KVM_HC_VBS_VTL_RETURN
- * hypercall and then service VTL calls from the shared calling area.
+ * This is the secure-plane (plane >0) side of the VM-planes park/dispatch
+ * handshake.  It lets an otherwise ordinary kernel act as the secure plane
+ * (conventionally plane 1 / VTL1 / VMPL0, though the index is not hard-coded)
+ * without pulling in the full VBS/HEKI stack (CONFIG_VBS).  Its single job is
+ * to hand control back to the normal plane (plane 0) via the
+ * KVM_HC_VBS_VTL_RETURN hypercall and then service VTL calls from the shared
+ * calling area.
  *
  * Control flow (all within plane 0's single KVM_RUN; see
  * arch/x86/kvm/x86.c __kvm_emulate_hypercall):
  *
- *   plane 0                        KVM                       plane 1 (here)
- *   -------                        ---                       --------------
+ *   normal plane                   KVM                       secure plane
+ *   ------------                   ---                       ------------
  *   fill calling area
  *   HC_VBS_VTL_CALL(ca_gpa) ─────▶ switch_plane ───────────▶ resume in
- *                                  (RAX := ca_gpa)            vtl_return()
- *                                                            handle call_id
+ *                                  (RAX := ca_gpa)            secmon_vtl_return()
+ *                                                            dispatch(call_id)
  *                                                            write ca->status
  *   resume after VTL_CALL ◀─────── switch_plane ◀─────────── HC_VBS_VTL_RETURN
  *
- * Activated by the "vbs_park" kernel command-line option; without it this
- * kernel boots normally and never parks.
+ * Because all planes of a VM share the same memslots (struct kvm_plane has no
+ * memslots of its own; they live in struct kvm), the secure plane sees the
+ * same guest-physical address space as the normal plane and can read the
+ * calling area and the GPAs referenced by each request directly.
+ *
+ * For now every VTL call is acknowledged as a no-op so the normal plane can
+ * make progress; the real per-call handlers (self-protection, HEKI memory
+ * protection, kernel sealing, …) are plumbed in incrementally.
+ *
+ * Activated by the "secure_monitor" kernel command-line option; without it
+ * this kernel boots normally and never parks.
  */
 
-#define pr_fmt(fmt) "vbs-park: " fmt
+#define pr_fmt(fmt) "vbs-secmon: " fmt
 
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -44,7 +54,7 @@
  *
  *   [ call_pending | call_id | status | arg_size | resp_size | buffer ]
  */
-struct vtl_ca {
+struct vbs_kvm_ca {
 	__u8	call_pending;	/* 1 while call is in flight		*/
 	__u8	rsvd[3];
 	__u32	call_id;	/* request id (set by caller)		*/
@@ -54,15 +64,15 @@ struct vtl_ca {
 	__u8	buffer[];	/* request data in, response data out	*/
 } __packed;
 
-/* Set from the "vbs_park" kernel command-line option. */
-static bool vbs_park_active __ro_after_init;
+/* Set from the "secure_monitor" kernel command-line option. */
+static bool secmon_active __ro_after_init;
 
-static int __init vbs_park_setup(char *str)
+static int __init secmon_setup(char *str)
 {
-	vbs_park_active = true;
+	secmon_active = true;
 	return 1;
 }
-__setup("vbs_park", vbs_park_setup);
+__setup("secure_monitor", secmon_setup);
 
 /*
  * Park the secure plane and hand control back to the normal plane.  On the
@@ -70,23 +80,23 @@ __setup("vbs_park", vbs_park_setup);
  * hypercall return value (RAX).  @status is carried for tracing only; the
  * real result is already in the calling area.
  */
-static u64 vtl_return(long status)
+static u64 secmon_vtl_return(long status)
 {
 	return kvm_hypercall1(KVM_HC_VBS_VTL_RETURN, (unsigned long)status);
 }
 
-static int vbs_park_fn(void *unused)
+static int secmon_monitor_fn(void *unused)
 {
 	long status = 0;
 
-	pr_info("secure-plane park loop started\n");
+	pr_info("secure monitor started\n");
 
 	for (;;) {
-		struct vtl_ca *ca;
+		struct vbs_kvm_ca *ca;
 		u64 ca_gpa;
 
 		/* Park; resume with the next request's calling-area GPA. */
-		ca_gpa = vtl_return(status);
+		ca_gpa = secmon_vtl_return(status);
 		if (!ca_gpa) {
 			status = -EINVAL;
 			continue;
@@ -101,10 +111,9 @@ static int vbs_park_fn(void *unused)
 		}
 
 		/*
-		 * No security policy lives here: acknowledge the call as a
-		 * no-op so the normal plane can make progress.  Replace this
-		 * with real handlers (or move plane 1 to a dedicated SVSM) to
-		 * enforce actual VBS semantics.
+		 * No handlers are plumbed in yet: acknowledge the call as a
+		 * no-op so the normal plane can make progress.  Real per-call
+		 * dispatch is added incrementally.
 		 */
 		pr_info_ratelimited("VTL call id=0x%x arg_size=%u (no-op)\n",
 				    ca->call_id, ca->arg_size);
@@ -118,19 +127,19 @@ static int vbs_park_fn(void *unused)
 	return 0;
 }
 
-static int __init vbs_park_init(void)
+static int __init secmon_init(void)
 {
 	struct task_struct *t;
 
-	if (!vbs_park_active)
+	if (!secmon_active)
 		return 0;
 
-	t = kthread_run(vbs_park_fn, NULL, "vbs-park");
+	t = kthread_run(secmon_monitor_fn, NULL, "vbs-secmon");
 	if (IS_ERR(t)) {
-		pr_err("failed to start park loop: %ld\n", PTR_ERR(t));
+		pr_err("failed to start secure monitor: %ld\n", PTR_ERR(t));
 		return PTR_ERR(t);
 	}
 
 	return 0;
 }
-late_initcall(vbs_park_init);
+late_initcall(secmon_init);
