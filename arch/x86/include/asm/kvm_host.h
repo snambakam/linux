@@ -366,7 +366,15 @@ union kvm_mmu_page_role {
 		unsigned guest_mode:1;
 		unsigned passthrough:1;
 		unsigned is_mirror:1;
-		unsigned :4;
+		/*
+		 * Plane (privilege level) that owns this shadow page.  VM
+		 * planes share memslots but must have independent page
+		 * tables so that a higher-privilege plane can restrict a
+		 * lower plane's access (e.g. deny reads of secure-plane
+		 * memory).  Tagging the role keeps each plane's roots and
+		 * SPTEs separate.  Always 0 when CONFIG_VM_PLANES is off.
+		 */
+		unsigned plane:4;
 
 		/*
 		 * This is left at the top of the word so that

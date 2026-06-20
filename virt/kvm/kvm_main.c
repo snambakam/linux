@@ -1231,6 +1231,9 @@ static struct kvm_plane *kvm_create_plane(struct kvm *kvm, unsigned plane_level)
 	plane->level = plane_level;
 
 	xa_init(&plane->vcpu_array);
+#ifdef CONFIG_VM_PLANES
+	xa_init(&plane->access_attr_array);
+#endif
 
 	if (kvm_arch_plane_init(kvm, plane, plane_level))
 		goto out_free_plane;
@@ -1248,6 +1251,9 @@ out_free_plane:
 static void kvm_destroy_one_plane(struct kvm_plane *plane)
 {
 	kvm_arch_plane_destroy(plane);
+#ifdef CONFIG_VM_PLANES
+	xa_destroy(&plane->access_attr_array);
+#endif
 	kvm_free_plane(plane);
 }
 

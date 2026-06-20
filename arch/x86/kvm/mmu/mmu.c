@@ -4690,6 +4690,34 @@ static int kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
 		return -EFAULT;
 	}
 
+	/*
+	 * A higher-privilege plane may forbid this plane from accessing a gfn
+	 * (e.g. to hide secure-plane memory from the normal plane).  Two cases
+	 * cannot be represented as a present SPTE and must be denied outright,
+	 * exiting to userspace with a memory fault rather than (re)building an
+	 * SPTE the access will immediately re-fault on:
+	 *
+	 *  - NO_READ: there is no present-but-unreadable EPT entry, so leave the
+	 *    gfn unmapped for this plane.
+	 *
+	 *  - NO_WRITE on a write fault: make_spte() strips ACC_WRITE_MASK and
+	 *    builds a read-only SPTE, so a guest write would re-fault forever
+	 *    (an unresolvable EPT write-violation livelock).  Deny it instead so
+	 *    the violation is visible and can be mediated (e.g. HEKI text_poke
+	 *    is routed through the secure plane rather than written directly).
+	 */
+	{
+		unsigned long plane_attrs =
+			kvm_plane_access_attributes(vcpu->plane, fault->gfn);
+
+		if ((plane_attrs & KVM_MEMORY_ATTRIBUTE_NO_READ) ||
+		    (fault->write &&
+		     (plane_attrs & KVM_MEMORY_ATTRIBUTE_NO_WRITE))) {
+			kvm_mmu_prepare_memory_fault_exit(vcpu, fault);
+			return -EFAULT;
+		}
+	}
+
 	if (unlikely(!slot))
 		return kvm_handle_noslot_fault(vcpu, fault, access);
 
@@ -5813,6 +5841,14 @@ kvm_calc_tdp_mmu_root_page_role(struct kvm_vcpu *vcpu,
 	role.level = kvm_mmu_get_tdp_level(vcpu);
 	role.direct = true;
 	role.has_4_byte_gpte = false;
+
+	/*
+	 * Give each VM plane its own TDP root.  Planes share memslots but
+	 * need independent page tables so a higher-privilege plane can
+	 * restrict a lower plane's access to a GFN.  plane_level is 0 (and
+	 * thus a no-op) on non-plane VMs and when CONFIG_VM_PLANES is off.
+	 */
+	role.plane = vcpu->plane_level;
 
 	return role;
 }

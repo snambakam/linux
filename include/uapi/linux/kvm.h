@@ -1669,6 +1669,7 @@ struct kvm_memory_attributes {
 #define KVM_MEMORY_ATTRIBUTE_PRIVATE           (1ULL << 3)
 #define KVM_MEMORY_ATTRIBUTE_NO_WRITE          (1ULL << 4)
 #define KVM_MEMORY_ATTRIBUTE_NO_EXEC           (1ULL << 5)
+#define KVM_MEMORY_ATTRIBUTE_NO_READ           (1ULL << 6)
 
 #define KVM_CREATE_GUEST_MEMFD	_IOWR(KVMIO,  0xd4, struct kvm_create_guest_memfd)
 #define GUEST_MEMFD_FLAG_MMAP		(1ULL << 0)
