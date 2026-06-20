@@ -1676,6 +1676,7 @@ struct kvm_memory_attributes {
  */
 #define KVM_MEMORY_ATTRIBUTE_NO_WRITE          (1ULL << 4)
 #define KVM_MEMORY_ATTRIBUTE_NO_EXEC           (1ULL << 5)
+#define KVM_MEMORY_ATTRIBUTE_NO_READ           (1ULL << 6)
 
 /*
  * Set memory attributes on a specific plane's address space.

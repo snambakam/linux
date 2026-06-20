@@ -380,15 +380,24 @@ union kvm_mmu_page_role {
 		 */
 		unsigned cr4_smep:1;
 
-		unsigned:3;
+		/*
+		 * Plane (privilege level) that owns this shadow page.  VM
+		 * planes share memslots but must have independent page
+		 * tables so that a higher-privilege plane can restrict a
+		 * lower plane's access (e.g. deny reads of secure-plane
+		 * memory).  Tagging the role keeps each plane's roots and
+		 * SPTEs separate.  Always 0 when CONFIG_VM_PLANES is off.
+		 */
+		unsigned plane:4;
 
 		/*
 		 * This is left at the top of the word so that
 		 * kvm_memslots_for_spte_role can extract it with a
-		 * simple shift.  While there is room, give it a whole
-		 * byte so it is also faster to load it from memory.
+		 * simple shift.  smm is only ever used as a boolean, so it
+		 * is reduced to 7 bits (from a full byte) to make room for
+		 * cr4_smep and the VM-planes plane tag above.
 		 */
-		unsigned smm:8;
+		unsigned smm:7;
 	};
 };
 
