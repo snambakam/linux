@@ -580,9 +580,13 @@ void __init kvm_mmu_spte_module_init(void);
 void kvm_mmu_reset_all_pte_masks(void);
 
 /*
- * Apply memory protection attributes to pte_access.
- * If memory attributes have NO_WRITE or NO_EXEC set for a GFN,
- * strip the corresponding access bits before building the SPTE.
+ * Apply cross-plane access restrictions to pte_access when building an SPTE
+ * for the faulting plane.  A higher-privilege plane may downgrade a lower
+ * plane's access to a GFN via its per-plane access_attr_array.  NO_WRITE and
+ * NO_EXEC are enforced here by stripping the corresponding access bits.
+ * NO_READ cannot be expressed as a present-but-unreadable SPTE on EPT, so it
+ * is enforced earlier in the fault handler (kvm_mmu_faultin_pfn) by refusing
+ * to map the page.
  */
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
 static inline unsigned int kvm_plane_filter_pte_access(struct kvm_vcpu *vcpu,
@@ -591,7 +595,7 @@ static inline unsigned int kvm_plane_filter_pte_access(struct kvm_vcpu *vcpu,
 {
 	unsigned long attrs;
 
-	attrs = kvm_get_memory_attributes(vcpu->kvm, gfn);
+	attrs = kvm_plane_access_attributes(vcpu->plane, gfn);
 	if (attrs & KVM_MEMORY_ATTRIBUTE_NO_WRITE)
 		pte_access &= ~ACC_WRITE_MASK;
 	if (attrs & KVM_MEMORY_ATTRIBUTE_NO_EXEC)

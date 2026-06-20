@@ -895,6 +895,18 @@ struct kvm_plane {
 	/* Per-Plane VCPU array */
 	struct xarray vcpu_array;
 
+#ifdef CONFIG_VM_PLANES
+	/*
+	 * Cross-plane access restrictions imposed on THIS plane by a
+	 * higher-privilege plane.  Each entry holds NO_READ/NO_WRITE/NO_EXEC
+	 * bits for a gfn and is enforced when building this plane's SPTEs
+	 * (planes have independent EPT roots).  Distinct from
+	 * kvm->mem_attr_array, which holds VM-wide PRIVATE/CoCo attributes.
+	 * Protected by kvm->slots_lock for writes, RCU for reads.
+	 */
+	struct xarray access_attr_array;
+#endif
+
 	struct kvm_arch_plane arch;
 };
 
@@ -2738,6 +2750,29 @@ static inline bool kvm_mem_is_private(struct kvm *kvm, gfn_t gfn)
 	return false;
 }
 #endif /* CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES */
+
+#ifdef CONFIG_VM_PLANES
+/*
+ * Cross-plane access restrictions: a higher-privilege plane downgrades a
+ * lower plane's access (NO_READ/NO_WRITE/NO_EXEC) to a gfn by storing bits in
+ * that lower plane's access_attr_array.  Enforced when building the lower
+ * plane's SPTEs (planes have independent EPT roots).  Returns 0 when no
+ * restriction applies.
+ */
+static inline unsigned long kvm_plane_access_attributes(struct kvm_plane *plane,
+							gfn_t gfn)
+{
+	if (!plane)
+		return 0;
+	return xa_to_value(xa_load(&plane->access_attr_array, gfn));
+}
+#else
+static inline unsigned long kvm_plane_access_attributes(struct kvm_plane *plane,
+							gfn_t gfn)
+{
+	return 0;
+}
+#endif /* CONFIG_VM_PLANES */
 
 #ifdef CONFIG_KVM_GUEST_MEMFD
 int kvm_gmem_get_pfn(struct kvm *kvm, struct kvm_memory_slot *slot,

@@ -10494,6 +10494,61 @@ static int complete_hypercall_exit(struct kvm_vcpu *vcpu)
 	return kvm_skip_emulated_instruction(vcpu);
 }
 
+#if defined(CONFIG_VM_PLANES) && defined(CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES)
+/*
+ * Apply cross-plane access restrictions requested by a higher-privilege plane.
+ * Stores @attrs (NO_READ/NO_WRITE/NO_EXEC) for [@start, @end) in @plane's
+ * access_attr_array and zaps the range so any pages already mapped in @plane's
+ * EPT re-fault and pick up the restriction.  @attrs == 0 clears the
+ * restriction for the range.
+ */
+static int kvm_plane_set_access_attrs(struct kvm *kvm, struct kvm_plane *plane,
+				      gfn_t start, gfn_t end, unsigned long attrs)
+{
+	void *entry = attrs ? xa_mk_value(attrs) : NULL;
+	gfn_t gfn;
+	int r = 0;
+
+	mutex_lock(&kvm->slots_lock);
+
+	/*
+	 * Reserve slots up front so the store loop below cannot fail partway
+	 * through and leave a gap (a still-readable page) in the protected
+	 * range.  Clearing a restriction (entry == NULL) never allocates.
+	 */
+	if (entry) {
+		for (gfn = start; gfn < end; gfn++) {
+			r = xa_reserve(&plane->access_attr_array, gfn,
+				       GFP_KERNEL_ACCOUNT);
+			if (r)
+				goto out_unlock;
+
+			cond_resched();
+		}
+	}
+
+	for (gfn = start; gfn < end; gfn++) {
+		r = xa_err(xa_store(&plane->access_attr_array, gfn, entry,
+				    GFP_KERNEL_ACCOUNT));
+		if (KVM_BUG_ON(r, kvm))
+			goto out_unlock;
+
+		cond_resched();
+	}
+
+	/*
+	 * Re-fault the affected gfns in the plane's EPT so the new restriction
+	 * takes effect on existing mappings.  Zapping all roots is harmless;
+	 * other planes simply rebuild identical entries on next access.
+	 */
+	kvm_zap_gfn_range(kvm, start, end);
+
+out_unlock:
+	mutex_unlock(&kvm->slots_lock);
+	return r;
+}
+#endif /* CONFIG_VM_PLANES && CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES */
+
 int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 			      int (*complete_hypercall)(struct kvm_vcpu *))
 {
@@ -10683,16 +10738,21 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 	case KVM_HC_VBS_SET_MEM_ATTRS:
 #if defined(CONFIG_VM_PLANES) && defined(CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES)
 		/*
-		 * The secure plane (plane >0) enforces EPT permissions on the
-		 * normal plane's memory.  It cannot issue the host
+		 * The secure plane (plane >0) enforces EPT permissions on a
+		 * lower plane's memory.  It cannot issue the host
 		 * KVM_SET_MEMORY_ATTRIBUTES ioctl, so it asks KVM to do it via
-		 * this hypercall.  Only a higher-privilege plane may call it.
+		 * this hypercall.  Only a higher-privilege plane may call it;
+		 * the restriction is applied to the plane directly below the
+		 * caller.
 		 *
 		 *   a0 = guest-physical address (page aligned)
 		 *   a1 = region size in bytes  (page aligned)
-		 *   a2 = access bits to retain for lower planes:
-		 *        bit0 read (implicit), bit1 write, bit2 exec
-		 *        (matches VBS_MEM_READ/WRITE/EXEC)
+		 *   a2 = access bits to retain for the lower plane:
+		 *        bit0 read, bit1 write, bit2 exec
+		 *        (matches VBS_MEM_READ/WRITE/EXEC).  A cleared bit adds
+		 *        the corresponding NO_READ/NO_WRITE/NO_EXEC restriction;
+		 *        a2 = 0 hides the range entirely (e.g. secure-plane
+		 *        memory that the normal plane must not read).
 		 */
 		if (vcpu->plane_level == 0) {
 			ret = -KVM_EPERM;
@@ -10704,17 +10764,26 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 			ret = -KVM_EINVAL;
 			goto out;
 		} else {
+			struct kvm_plane *target;
 			unsigned long attrs = 0;
 			gfn_t start = a0 >> PAGE_SHIFT;
 			gfn_t end = (a0 + a1) >> PAGE_SHIFT;
 
+			target = vcpu->kvm->planes[vcpu->plane_level - 1];
+			if (!target) {
+				ret = -KVM_EINVAL;
+				goto out;
+			}
+
+			if (!(a2 & BIT(0)))
+				attrs |= KVM_MEMORY_ATTRIBUTE_NO_READ;
 			if (!(a2 & BIT(1)))
 				attrs |= KVM_MEMORY_ATTRIBUTE_NO_WRITE;
 			if (!(a2 & BIT(2)))
 				attrs |= KVM_MEMORY_ATTRIBUTE_NO_EXEC;
 
-			if (kvm_vm_set_mem_attributes(vcpu->kvm, start, end,
-						      attrs))
+			if (kvm_plane_set_access_attrs(vcpu->kvm, target, start,
+						       end, attrs))
 				ret = -KVM_EINVAL;
 			else
 				ret = 0;
