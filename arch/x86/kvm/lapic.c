@@ -405,7 +405,6 @@ enum {
 
 static void kvm_recalculate_apic_map(struct kvm_plane *plane)
 {
-	struct kvm_plane *plane = kvm->planes[0];
 	struct kvm_apic_map *new, *old = NULL;
 	struct kvm *kvm = plane->kvm;
 	struct kvm_vcpu *vcpu;
@@ -486,19 +485,19 @@ out:
 	 * map also applies to APICv.
 	 */
 	if (!new)
-		kvm_set_apicv_inhibit(plane, APICV_INHIBIT_REASON_PHYSICAL_ID_ALIASED);
+		kvm_set_apicv_inhibit(kvm, APICV_INHIBIT_REASON_PHYSICAL_ID_ALIASED);
 	else
-		kvm_clear_apicv_inhibit(plane, APICV_INHIBIT_REASON_PHYSICAL_ID_ALIASED);
+		kvm_clear_apicv_inhibit(kvm, APICV_INHIBIT_REASON_PHYSICAL_ID_ALIASED);
 
 	if (!new || new->logical_mode == KVM_APIC_MODE_MAP_DISABLED)
-		kvm_set_apicv_inhibit(plane, APICV_INHIBIT_REASON_LOGICAL_ID_ALIASED);
+		kvm_set_apicv_inhibit(kvm, APICV_INHIBIT_REASON_LOGICAL_ID_ALIASED);
 	else
-		kvm_clear_apicv_inhibit(plane, APICV_INHIBIT_REASON_LOGICAL_ID_ALIASED);
+		kvm_clear_apicv_inhibit(kvm, APICV_INHIBIT_REASON_LOGICAL_ID_ALIASED);
 
 	if (xapic_id_mismatch)
-		kvm_set_apicv_inhibit(plane, APICV_INHIBIT_REASON_APIC_ID_MODIFIED);
+		kvm_set_apicv_inhibit(kvm, APICV_INHIBIT_REASON_APIC_ID_MODIFIED);
 	else
-		kvm_clear_apicv_inhibit(plane, APICV_INHIBIT_REASON_APIC_ID_MODIFIED);
+		kvm_clear_apicv_inhibit(kvm, APICV_INHIBIT_REASON_APIC_ID_MODIFIED);
 
 	old = rcu_dereference_protected(plane->arch.apic_map,
 			lockdep_is_held(&plane->arch.apic_map_lock));
@@ -1396,39 +1395,6 @@ int __kvm_irq_delivery_to_apic(struct kvm_plane *plane, struct kvm_lapic *src,
 	return r;
 }
 
-static void kvm_lapic_deliver_interrupt(struct kvm_vcpu *vcpu, struct kvm_lapic *apic,
-					int delivery_mode, int trig_mode, int vector)
-{
-	struct kvm_vcpu *plane0_vcpu = vcpu->plane0;
-	struct kvm_plane *running_plane;
-	u16 req_exit_planes;
-
-	kvm_x86_call(deliver_interrupt)(apic, delivery_mode, trig_mode, vector);
-
-	/*
-	 * test_and_set_bit implies a memory barrier, so IRR is written before
-	 * reading irr_pending_planes below...
-	 */
-	if (!test_and_set_bit(vcpu->plane, &plane0_vcpu->arch.irr_pending_planes)) {
-		/*
-		 * ... and also running_plane and req_exit_planes are read after writing
-		 * irr_pending_planes.  Both barriers pair with kvm_arch_vcpu_ioctl_run().
-		 */
-		smp_mb__after_atomic();
-
-		running_plane = READ_ONCE(plane0_vcpu->running_plane);
-		if (!running_plane)
-			return;
-
-		req_exit_planes = READ_ONCE(plane0_vcpu->req_exit_planes);
-		if (!(req_exit_planes & BIT(vcpu->plane)))
-			return;
-
-		kvm_make_request(KVM_REQ_PLANE_INTERRUPT,
-				 kvm_get_plane_vcpu(running_plane, vcpu->vcpu_id));
-	}
-}
-
 /*
  * Add a pending IRQ into lapic.
  * Return 1 if successfully added and 0 if discarded.
@@ -1470,7 +1436,8 @@ static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
 				apic_clear_vector(vector, apic->regs + APIC_TMR);
 		}
 
-		kvm_lapic_deliver_interrupt(vcpu, apic, delivery_mode, trig_mode, vector);
+		kvm_x86_call(deliver_interrupt)(apic, delivery_mode,
+						trig_mode, vector);
 		break;
 
 	case APIC_DM_REMRD:
@@ -2087,7 +2054,7 @@ static void apic_timer_expired(struct kvm_lapic *apic, bool from_timer_fn)
 	if (apic_lvtt_tscdeadline(apic) || ktimer->hv_timer_in_use)
 		ktimer->expired_tscdeadline = ktimer->tscdeadline;
 
-	if (!from_timer_fn && apic->apicv_active && vcpu->wants_to_run) {
+	if (!from_timer_fn && apic->apicv_active && kvm_vcpu_wants_to_run(vcpu)) {
 		WARN_ON(kvm_get_running_vcpu() != vcpu);
 		kvm_apic_inject_pending_timer_irqs(apic);
 		return;
@@ -2867,7 +2834,7 @@ static void __kvm_apic_set_base(struct kvm_vcpu *vcpu, u64 value)
 
 	if ((value & MSR_IA32_APICBASE_ENABLE) &&
 	     apic->base_address != APIC_DEFAULT_PHYS_BASE) {
-		kvm_set_apicv_inhibit(vcpu_to_plane(vcpu),
+		kvm_set_apicv_inhibit(apic->vcpu->kvm,
 				      APICV_INHIBIT_REASON_APIC_BASE_MODIFIED);
 	}
 }

@@ -956,12 +956,6 @@ struct kvm_vcpu_arch {
 	u64 ia32_xss;
 	u64 guest_supported_xss;
 
-	/*
-	 * Only valid in plane0.  The bitmask of planes that received
-	 * an interrupt, to be checked against req_exit_planes.
-	 */
-	atomic_t irr_pending_planes;
-
 	struct kvm_pio_request pio;
 	void *pio_data;
 	void *sev_pio_data;
@@ -1173,10 +1167,6 @@ struct kvm_arch_memory_slot {
 	struct kvm_rmap_head *rmap[KVM_NR_PAGE_SIZES];
 	struct kvm_lpage_info *lpage_info[KVM_NR_PAGE_SIZES - 1];
 	unsigned short *gfn_write_track;
-};
-
-struct kvm_arch_plane {
-	unsigned long apicv_inhibit_reasons;
 };
 
 /*
@@ -1397,13 +1387,11 @@ enum kvm_apicv_inhibit {
 	/*
 	 * PIT (i8254) 're-inject' mode, relies on EOI intercept,
 	 * which AVIC doesn't support for edge triggered interrupts.
-	 * Applied only to plane 0.
 	 */
 	APICV_INHIBIT_REASON_PIT_REINJ,
 
 	/*
-	 * AVIC is disabled because SEV doesn't support it.  Sticky and applied
-	 * only to plane 0.
+	 * AVIC is disabled because SEV doesn't support it.
 	 */
 	APICV_INHIBIT_REASON_SEV,
 
@@ -1483,7 +1471,6 @@ struct kvm_arch {
 	unsigned int indirect_shadow_pages;
 	u8 mmu_valid_gen;
 	u8 vm_type;
-	bool planes_share_fpu;
 	bool has_private_mem;
 	bool has_protected_state;
 	bool has_protected_eoi;
@@ -1805,7 +1792,6 @@ struct kvm_lapic_irq {
 	u16 delivery_mode;
 	u16 dest_mode;
 	bool level;
-	u8 plane;
 	u16 trig_mode;
 	u32 shorthand;
 	u32 dest_id;
@@ -2399,21 +2385,21 @@ gpa_t kvm_mmu_gva_to_gpa_system(struct kvm_vcpu *vcpu, gva_t gva,
 bool kvm_apicv_activated(struct kvm *kvm);
 bool kvm_vcpu_apicv_activated(struct kvm_vcpu *vcpu);
 void __kvm_vcpu_update_apicv(struct kvm_vcpu *vcpu);
-void __kvm_set_or_clear_apicv_inhibit(struct kvm_plane *plane,
+void __kvm_set_or_clear_apicv_inhibit(struct kvm *kvm,
 				      enum kvm_apicv_inhibit reason, bool set);
-void kvm_set_or_clear_apicv_inhibit(struct kvm_plane *plane,
+void kvm_set_or_clear_apicv_inhibit(struct kvm *kvm,
 				    enum kvm_apicv_inhibit reason, bool set);
 
-static inline void kvm_set_apicv_inhibit(struct kvm_plane *plane,
+static inline void kvm_set_apicv_inhibit(struct kvm *kvm,
 					 enum kvm_apicv_inhibit reason)
 {
-	kvm_set_or_clear_apicv_inhibit(plane, reason, true);
+	kvm_set_or_clear_apicv_inhibit(kvm, reason, true);
 }
 
-static inline void kvm_clear_apicv_inhibit(struct kvm_plane *plane,
+static inline void kvm_clear_apicv_inhibit(struct kvm *kvm,
 					   enum kvm_apicv_inhibit reason)
 {
-	kvm_set_or_clear_apicv_inhibit(plane, reason, false);
+	kvm_set_or_clear_apicv_inhibit(kvm, reason, false);
 }
 
 void kvm_inc_or_dec_irq_window_inhibit(struct kvm *kvm, bool inc);
@@ -2503,8 +2489,6 @@ enum {
 # define kvm_memslots_for_spte_role(kvm, role) __kvm_memslots(kvm, 0)
 #endif
 
-#define KVM_MAX_VCPU_PLANES	16
-
 int kvm_cpu_has_injectable_intr(struct kvm_vcpu *v);
 int kvm_cpu_has_interrupt(struct kvm_vcpu *vcpu);
 int kvm_cpu_has_extint(struct kvm_vcpu *v);
@@ -2538,9 +2522,6 @@ bool kvm_is_linear_rip(struct kvm_vcpu *vcpu, unsigned long linear_rip);
 void kvm_make_scan_ioapic_request(struct kvm *kvm);
 void kvm_make_scan_ioapic_request_mask(struct kvm *kvm,
 				       unsigned long *vcpu_bitmap);
-
-void kvm_arch_init_plane(struct kvm_plane *plane);
-void kvm_arch_free_plane(struct kvm_plane *plane);
 
 bool kvm_arch_async_page_not_present(struct kvm_vcpu *vcpu,
 				     struct kvm_async_pf *work);
@@ -2611,8 +2592,5 @@ static inline bool kvm_arch_has_irq_bypass(void)
 {
 	return enable_device_posted_irqs;
 }
-
-int kvm_arch_nr_vcpu_planes(struct kvm *kvm);
-bool kvm_arch_planes_share_fpu(struct kvm *kvm);
 
 #endif /* _ASM_X86_KVM_HOST_H */
