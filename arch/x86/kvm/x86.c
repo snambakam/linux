@@ -517,31 +517,6 @@ void kvm_free_plane(struct kvm_plane *plane)
 	kvm_x86_call(free_plane)(plane);
 }
 
-struct kvm_plane *x86_alloc_plane(void)
-{
-	/* For better type checking, do not return kzalloc() value directly */
-	struct kvm_plane *plane = kzalloc(sizeof(*plane), GFP_KERNEL_ACCOUNT);
-
-	return plane;
-}
-EXPORT_SYMBOL_FOR_KVM_INTERNAL(x86_alloc_plane);
-
-void x86_free_plane(struct kvm_plane *plane)
-{
-	kfree(plane);
-}
-EXPORT_SYMBOL_FOR_KVM_INTERNAL(x86_free_plane);
-
-struct kvm_plane *kvm_alloc_plane(void)
-{
-	return kvm_x86_call(alloc_plane)();
-}
-
-void kvm_free_plane(struct kvm_plane *plane)
-{
-	kvm_x86_call(free_plane)(plane);
-}
-
 /*
  * All feature MSRs except uCode revID, which tracks the currently loaded uCode
  * patch, are immutable once the vCPU model is defined.
@@ -1026,7 +1001,7 @@ static int complete_emulated_insn_gp(struct kvm_vcpu *vcpu, int err)
 void kvm_inject_page_fault(struct kvm_vcpu *vcpu, struct x86_exception *fault,
 			   bool from_hardware)
 {
-	++vcpu->stat->pf_guest;
+	++vcpu->stat.pf_guest;
 
 	/*
 	 * Async #PF in L2 is always forwarded to L1 as a VM-Exit regardless of
@@ -3732,7 +3707,7 @@ static void kvmclock_reset(struct kvm_vcpu *vcpu)
 
 static void kvm_vcpu_flush_tlb_all(struct kvm_vcpu *vcpu)
 {
-	++vcpu->stat->tlb_flush;
+	++vcpu->stat.tlb_flush;
 	kvm_x86_call(flush_tlb_all)(vcpu);
 
 	/* Flushing all ASIDs flushes the current ASID... */
@@ -3741,7 +3716,7 @@ static void kvm_vcpu_flush_tlb_all(struct kvm_vcpu *vcpu)
 
 static void kvm_vcpu_flush_tlb_guest(struct kvm_vcpu *vcpu)
 {
-	++vcpu->stat->tlb_flush;
+	++vcpu->stat.tlb_flush;
 
 	if (!tdp_enabled) {
 		/*
@@ -3766,7 +3741,7 @@ static void kvm_vcpu_flush_tlb_guest(struct kvm_vcpu *vcpu)
 
 static inline void kvm_vcpu_flush_tlb_current(struct kvm_vcpu *vcpu)
 {
-	++vcpu->stat->tlb_flush;
+	++vcpu->stat.tlb_flush;
 	kvm_x86_call(flush_tlb_current)(vcpu);
 }
 
@@ -5305,11 +5280,11 @@ static void kvm_steal_time_set_preempted(struct kvm_vcpu *vcpu)
 	 * preempted if and only if the VM-Exit was due to a host interrupt.
 	 */
 	if (!vcpu->arch.at_instruction_boundary) {
-		vcpu->stat->preemption_other++;
+		vcpu->stat.preemption_other++;
 		return;
 	}
 
-	vcpu->stat->preemption_reported++;
+	vcpu->stat.preemption_reported++;
 	if (!(vcpu->arch.st.msr_val & KVM_MSR_ENABLED))
 		return;
 
@@ -6845,7 +6820,7 @@ int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
 		r = -EEXIST;
 		if (irqchip_in_kernel(kvm) || kvm->has_planes)
 			goto split_irqchip_unlock;
-		if (kvm->created_vcpus || kvm->has_planes)
+		if (kvm->created_vcpus)
 			goto split_irqchip_unlock;
 		/* Pairs with irqchip_in_kernel. */
 		smp_wmb();
@@ -9278,7 +9253,7 @@ static int handle_emulation_failure(struct kvm_vcpu *vcpu, int emulation_type)
 {
 	struct kvm *kvm = vcpu->kvm;
 
-	++vcpu->stat->insn_emulation_fail;
+	++vcpu->stat.insn_emulation_fail;
 	trace_kvm_emulate_insn_failed(vcpu);
 
 	if (emulation_type & EMULTYPE_VMWARE_GP) {
@@ -9510,7 +9485,7 @@ int x86_decode_emulated_instruction(struct kvm_vcpu *vcpu, int emulation_type,
 	r = x86_decode_insn(ctxt, insn, insn_len, emulation_type);
 
 	trace_kvm_emulate_insn_start(vcpu);
-	++vcpu->stat->insn_emulation;
+	++vcpu->stat.insn_emulation;
 
 	return r;
 }
@@ -9685,7 +9660,7 @@ restart:
 		}
 		r = 0;
 	} else if (vcpu->mmio_needed) {
-		++vcpu->stat->mmio_exits;
+		++vcpu->stat.mmio_exits;
 
 		if (!vcpu->mmio_is_write)
 			writeback = false;
@@ -10452,7 +10427,7 @@ static void kvm_sched_yield(struct kvm_vcpu *vcpu, unsigned long dest_id)
 	struct kvm_vcpu *target = NULL;
 	struct kvm_apic_map *map;
 
-	vcpu->stat->directed_yield_attempted++;
+	vcpu->stat.directed_yield_attempted++;
 
 	if (single_task_running())
 		goto no_yield;
@@ -10478,7 +10453,7 @@ static void kvm_sched_yield(struct kvm_vcpu *vcpu, unsigned long dest_id)
 	if (kvm_vcpu_yield_to(target) <= 0)
 		goto no_yield;
 
-	vcpu->stat->directed_yield_successful++;
+	vcpu->stat.directed_yield_successful++;
 
 no_yield:
 	return;
@@ -10555,7 +10530,7 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 	int op_64_bit = is_64_bit_hypercall(vcpu);
 	unsigned long ret, nr, a0, a1, a2, a3;
 
-	++vcpu->stat->hypercalls;
+	++vcpu->stat.hypercalls;
 
 	if (op_64_bit) {
 		nr = kvm_rax_read_raw(vcpu);
@@ -10673,7 +10648,7 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 
 				if (common->vtl_plane_ready) {
 					/* Parked in vtl_return: deliver now. */
-					kvm_rax_write(secure, a0);
+					kvm_rax_write_raw(secure, a0);
 					common->vtl_call_pending = false;
 				} else {
 					/* Still booting: deliver on readiness. */
@@ -11388,7 +11363,7 @@ void kvm_inc_or_dec_irq_window_inhibit(struct kvm *kvm, bool inc)
 	 */
 	guard(rwsem_write)(&kvm->arch.apicv_update_lock);
 	if (atomic_add_return(add, &kvm->arch.apicv_nr_irq_window_req) == inc)
-		__kvm_set_or_clear_apicv_inhibit(kvm->planes[0], APICV_INHIBIT_REASON_IRQWIN, inc);
+		__kvm_set_or_clear_apicv_inhibit(kvm, APICV_INHIBIT_REASON_IRQWIN, inc);
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_inc_or_dec_irq_window_inhibit);
 
@@ -11644,22 +11619,9 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		goto out;
 	}
 
-	if (kvm_check_plane0_events(vcpu)) {
-		kvm_vcpu_set_plane_runnable(vcpu->common->vcpus[0]);
-
-		kvm_make_request(KVM_REQ_EVENT, vcpu);
-		kvm_make_request(KVM_REQ_PLANE_RESCHED, vcpu);
-	}
-
-	if (kvm_check_request(KVM_REQ_PLANE_RESCHED, vcpu)) {
-		vcpu->common->plane_switch = true;
-		r = 0;
-		goto out;
-	}
-
 	if (kvm_check_request(KVM_REQ_EVENT, vcpu) || req_int_win ||
 	    kvm_xen_has_interrupt(vcpu)) {
-		++vcpu->stat->req_event;
+		++vcpu->stat.req_event;
 		r = kvm_apic_accept_events(vcpu);
 		if (r < 0) {
 			r = 0;
@@ -11815,7 +11777,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		run_flags = 0;
 
 		/* Note, VM-Exits that go down the "slow" path are accounted below. */
-		++vcpu->stat->exits;
+		++vcpu->stat.exits;
 	}
 
 	kvm_load_host_pkru(vcpu);
@@ -11881,11 +11843,11 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	 * VM-Exit on SVM and any ticks that occur between VM-Exit and now.
 	 * An instruction is required after local_irq_enable() to fully unblock
 	 * interrupts on processors that implement an interrupt shadow, the
-	 * stat->exits increment will do nicely.
+	 * stat.exits increment will do nicely.
 	 */
 	kvm_before_interrupt(vcpu, KVM_HANDLING_IRQ);
 	local_irq_enable();
-	++vcpu->stat->exits;
+	++vcpu->stat.exits;
 	local_irq_disable();
 	kvm_after_interrupt(vcpu);
 
@@ -12103,7 +12065,7 @@ static int vcpu_run(struct kvm_vcpu *vcpu)
 			kvm_vcpu_ready_for_interrupt_injection(vcpu)) {
 			r = 0;
 			vcpu->run->exit_reason = KVM_EXIT_IRQ_WINDOW_OPEN;
-			++vcpu->stat->request_irq_exits;
+			++vcpu->stat.request_irq_exits;
 			break;
 		}
 
@@ -12128,7 +12090,7 @@ static int __kvm_emulate_halt(struct kvm_vcpu *vcpu, int state, int reason)
 	 * managed by userspace, in which case userspace is responsible for
 	 * handling wake events.
 	 */
-	++vcpu->stat->halt_exits;
+	++vcpu->stat.halt_exits;
 	if (lapic_in_kernel(vcpu)) {
 		if (kvm_vcpu_has_events(vcpu) || vcpu->arch.pv.pv_unhalted)
 			state = KVM_MP_STATE_RUNNABLE;
@@ -12300,7 +12262,7 @@ static void kvm_put_guest_fpu(struct kvm_vcpu *vcpu)
 		return;
 
 	fpu_swap_kvm_fpstate(&vcpu->arch.guest_fpu, false);
-	++vcpu->stat->fpu_reload;
+	++vcpu->stat.fpu_reload;
 	trace_kvm_fpu(0);
 }
 
@@ -12387,7 +12349,7 @@ static int __kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		if (signal_pending(current)) {
 			r = -EINTR;
 			kvm_run->exit_reason = KVM_EXIT_INTR;
-			++vcpu->stat->signal_exits;
+			++vcpu->stat.signal_exits;
 		}
 		goto out;
 	}
@@ -13180,7 +13142,7 @@ int kvm_arch_vcpu_precreate(struct kvm *kvm, unsigned int id)
 	return 0;
 }
 
-int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu, struct kvm_plane *plane)
+int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 {
 	int r;
 

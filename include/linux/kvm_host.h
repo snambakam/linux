@@ -453,8 +453,7 @@ struct kvm_vcpu {
 #endif
 
 	struct kvm_vcpu_arch arch;
-	struct kvm_vcpu_stat *stat;
-	struct kvm_vcpu_stat __stat;
+	struct kvm_vcpu_stat stat;
 	char stats_id[KVM_STATS_NAME_SIZE];
 
 	/*
@@ -1012,7 +1011,6 @@ struct kvm {
 	bool dirty_ring_with_bitmap;
 	bool vm_bugged;
 	bool vm_dead;
-	bool has_planes;
 
 #ifdef CONFIG_HAVE_KVM_PM_NOTIFIER
 	struct notifier_block pm_notifier;
@@ -1801,7 +1799,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu);
 void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu);
 int kvm_arch_vcpu_precreate(struct kvm *kvm, unsigned int id);
-int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu, struct kvm_plane *plane);
+int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_postcreate(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_destroy(struct kvm_vcpu *vcpu);
 
@@ -2664,7 +2662,7 @@ static inline int kvm_arch_vcpu_run_pid_change(struct kvm_vcpu *vcpu)
 static inline void kvm_handle_signal_exit(struct kvm_vcpu *vcpu)
 {
 	vcpu->run->exit_reason = KVM_EXIT_INTR;
-	vcpu->stat->signal_exits++;
+	vcpu->stat.signal_exits++;
 }
 
 static inline int kvm_xfer_to_guest_mode_handle_work(struct kvm_vcpu *vcpu)

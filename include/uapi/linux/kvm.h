@@ -140,16 +140,6 @@ struct kvm_xen_exit {
 	} u;
 };
 
-struct kvm_plane_event_exit {
-#define KVM_PLANE_EVENT_INTERRUPT    1
-	__u16 cause;
-	__u16 pending_event_planes;
-	__u16 target;
-	__u16 padding;
-	__u32 flags;
-	__u64 extra[8];
-};
-
 struct kvm_exit_snp_req_certs {
 	__u64 gpa;
 	__u64 npages;
@@ -243,13 +233,7 @@ struct kvm_run {
 	/* in */
 	__u8 request_interrupt_window;
 	__u8 HINT_UNSAFE_IN_KVM(immediate_exit);
-
-	/* in/out */
-	__u8 plane;
-	__u16 suspended_planes;
-
-	/* in */
-	__u16 req_exit_planes;
+	__u8 padding1[6];
 
 	/* out */
 	__u32 exit_reason;
@@ -486,8 +470,6 @@ struct kvm_run {
 			__u64 gpa;
 			__u64 size;
 		} memory_fault;
-		/* KVM_EXIT_PLANE_EVENT */
-		struct kvm_plane_event_exit plane_event;
 		/* KVM_EXIT_TDX */
 		struct {
 			__u64 flags;
@@ -1708,8 +1690,5 @@ struct kvm_pre_fault_memory {
 	__u64 flags;
 	__u64 padding[5];
 };
-
-#define KVM_CREATE_PLANE	_IO(KVMIO, 0xd6)
-#define KVM_CREATE_VCPU_PLANE	_IO(KVMIO, 0xd7)
 
 #endif /* __LINUX_KVM_H */

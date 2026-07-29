@@ -4488,7 +4488,7 @@ static void sev_get_apic_ids(struct vcpu_svm *svm)
 	desc->num_entries = n;
 	kvm_for_each_vcpu(i, loop_vcpu, kvm) {
 		/*TODO: is this possible? */
-		if (i > n)
+		if (i >= n)
 			break;
 
 		desc->apic_ids[i] = loop_vcpu->vcpu_id;
@@ -4713,6 +4713,9 @@ static bool is_snp_only_vmgexit(u64 exit_code)
 	case SVM_VMGEXIT_GUEST_REQUEST:
 	case SVM_VMGEXIT_EXT_GUEST_REQUEST:
 	case SVM_VMGEXIT_PSC:
+	case SVM_VMGEXIT_HVDB_PAGE:
+	case SVM_VMGEXIT_HV_IPI:
+	case SVM_VMGEXIT_SNP_RUN_VMPL:
 		return true;
 	default:
 		return false;

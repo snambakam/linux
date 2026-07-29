@@ -440,7 +440,7 @@ void *kvm_mmu_memory_cache_alloc(struct kvm_mmu_memory_cache *mc)
 
 static int kvm_vcpu_init_common(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned long id)
 {
-	struct kvm_vcpu_common *common = kzalloc(sizeof(*common), GFP_KERNEL_ACCOUNT);
+	struct kvm_vcpu_common *common __free(kfree) = kzalloc(sizeof(*common), GFP_KERNEL_ACCOUNT);
 	struct page *page;
 	int r;
 
@@ -503,10 +503,7 @@ static int kvm_vcpu_init_common(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned
 	if (r)
 		goto out_free_dirty_ring;
 
-	vcpu->common = common;
-
-	kvm_vcpu_set_in_spin_loop(vcpu, false);
-	kvm_vcpu_set_dy_eligible(vcpu, false);
+	vcpu->common = no_free_ptr(common);
 
 	kvm_vcpu_set_in_spin_loop(vcpu, false);
 	kvm_vcpu_set_dy_eligible(vcpu, false);
@@ -521,8 +518,6 @@ out_drop_counter:
 	mutex_lock(&kvm->lock);
 	kvm->created_vcpus--;
 	mutex_unlock(&kvm->lock);
-
-	kfree(common);
 
 	return r;
 }
@@ -1243,7 +1238,6 @@ static struct kvm_plane *kvm_create_plane(struct kvm *kvm, unsigned plane_level)
 	if (kvm_arch_plane_init(kvm, plane, plane_level))
 		goto out_free_plane;
 
-
 	kvm->planes[plane_level] = plane;
 
 	return plane;
@@ -1490,6 +1484,7 @@ static void kvm_destroy_vm(struct kvm *kvm)
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
 	xa_destroy(&kvm->mem_attr_array);
 #endif
+	kvm_destroy_planes(kvm);
 	kvm_arch_free_vm(kvm);
 	kvm_destroy_planes(kvm);
 	preempt_notifier_dec();
@@ -4383,6 +4378,7 @@ static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id
 {
 	struct kvm *kvm = plane->kvm;
 	struct kvm_vcpu *vcpu;
+	struct kvm_vcpu *prev_current_vcpu;
 	int r;
 
 	mutex_lock(&kvm->lock);
@@ -4427,7 +4423,25 @@ static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id
 
 	kvm_vcpu_init(vcpu, kvm, id);
 
-	r = kvm_arch_vcpu_create(vcpu, plane);
+	/*
+	 * For planes above plane-0 the vCPU shares plane-0's kvm_vcpu_common,
+	 * including ->current_vcpu and the preempt notifier consulted by
+	 * kvm_sched_in()/kvm_sched_out().  kvm_arch_vcpu_create() (and
+	 * kvm_arch_vcpu_postcreate() below) load this vCPU's VMCS via
+	 * vcpu_load() but do not update ->current_vcpu, which still points at
+	 * plane-0's vCPU.  The arch create path performs GFP_KERNEL
+	 * allocations, so the creating task can sleep and be rescheduled while
+	 * this vCPU's VMCS is loaded; the shared notifier would then
+	 * save/restore plane-0's vCPU and desync the per-CPU loaded_vmcs
+	 * tracking from the hardware-current VMCS, wedging VMX (host hard
+	 * lockup).  Mirror the run loop's invariant (see
+	 * kvm_vcpu_select_plane()): make ->current_vcpu the vCPU whose VMCS is
+	 * loaded for the duration, then restore it.
+	 */
+	prev_current_vcpu = vcpu->common->current_vcpu;
+	vcpu->common->current_vcpu = vcpu;
+	r = kvm_arch_vcpu_create(vcpu);
+	vcpu->common->current_vcpu = prev_current_vcpu;
 	if (r)
 		goto vcpu_free_common;
 
@@ -4456,14 +4470,18 @@ static int kvm_plane_ioctl_create_vcpu(struct kvm_plane *plane, unsigned long id
 	kvm_vcpu_unlock(vcpu);
 
 	mutex_unlock(&kvm->lock);
+	/* Same VMCS/current_vcpu invariant as above (vcpu_load in postcreate). */
+	prev_current_vcpu = vcpu->common->current_vcpu;
+	vcpu->common->current_vcpu = vcpu;
 	kvm_arch_vcpu_postcreate(vcpu);
+	vcpu->common->current_vcpu = prev_current_vcpu;
 	kvm_create_vcpu_debugfs(vcpu);
 	return r;
 
 kvm_put_xa_erase:
 	kvm_vcpu_unlock(vcpu);
 	kvm_put_kvm_no_destroy(kvm);
-	xa_erase(&kvm->planes[0]->vcpu_array, vcpu->vcpu_idx);
+	xa_erase(&plane->vcpu_array, vcpu->vcpu_idx);
 unlock_vcpu_destroy:
 	mutex_unlock(&kvm->lock);
 	kvm_arch_vcpu_destroy(vcpu);
@@ -4614,38 +4632,16 @@ static int kvm_wait_for_vcpu_online(struct kvm_vcpu *vcpu)
 static inline bool kvm_is_vcpu_plane_ioctl(unsigned ioctl)
 {
 	switch (ioctl) {
-	case KVM_GET_DEBUGREGS:
-	case KVM_SET_DEBUGREGS:
 	case KVM_GET_FPU:
 	case KVM_SET_FPU:
-	case KVM_GET_LAPIC:
-	case KVM_SET_LAPIC:
-	case KVM_GET_MSRS:
-	case KVM_SET_MSRS:
-	case KVM_GET_NESTED_STATE:
-	case KVM_SET_NESTED_STATE:
-	case KVM_GET_ONE_REG:
-	case KVM_SET_ONE_REG:
 	case KVM_GET_REGS:
 	case KVM_SET_REGS:
 	case KVM_GET_SREGS:
 	case KVM_SET_SREGS:
-	case KVM_GET_SREGS2:
-	case KVM_SET_SREGS2:
-	case KVM_GET_VCPU_EVENTS:
-	case KVM_SET_VCPU_EVENTS:
-	case KVM_GET_XCRS:
-	case KVM_SET_XCRS:
-	case KVM_GET_XSAVE:
-	case KVM_GET_XSAVE2:
-	case KVM_SET_XSAVE:
-
-	case KVM_GET_REG_LIST:
 	case KVM_TRANSLATE:
 		return true;
-
 	default:
-		return false;
+		return kvm_arch_is_vcpu_plane_ioctl(ioctl);
 	}
 }
 
@@ -4950,7 +4946,6 @@ static int kvm_vm_ioctl_check_extension_generic(struct kvm *kvm, long arg);
 
 static long __kvm_plane_ioctl(struct kvm_plane *plane, unsigned int ioctl, unsigned long arg)
 {
-	void __user *argp = (void __user *)arg;
 	long r;
 
 	switch (ioctl) {
@@ -4966,38 +4961,35 @@ static long __kvm_plane_ioctl(struct kvm_plane *plane, unsigned int ioctl, unsig
 		break;
 #ifdef CONFIG_HAVE_KVM_MSI
 	case KVM_SIGNAL_MSI: {
+		void __user *argp = (void __user *)arg;
 		struct kvm_msi msi;
 
-		r = -EFAULT;
 		if (copy_from_user(&msi, argp, sizeof(msi)))
-			goto out;
+			return -EFAULT;
 		r = kvm_send_userspace_msi(plane->kvm, &msi, plane->level);
 		break;
 	}
 #endif
 #ifdef CONFIG_HAVE_KVM_IRQ_ROUTING
 	case KVM_SET_GSI_ROUTING: {
+		void __user *argp = (void __user *)arg;
 		struct kvm_irq_routing routing;
 		struct kvm_irq_routing __user *urouting;
 		struct kvm_irq_routing_entry *entries = NULL;
 
-		r = -EFAULT;
 		if (copy_from_user(&routing, argp, sizeof(routing)))
-			goto out;
-		r = -EINVAL;
-		if (!kvm_arch_can_set_irq_routing(plane->kvm))
-			goto out;
-		if (routing.nr > KVM_MAX_IRQ_ROUTES)
-			goto out;
-		if (routing.flags)
-			goto out;
+			return -EFAULT;
+		if (!kvm_arch_can_set_irq_routing(plane->kvm) ||
+		    routing.nr > KVM_MAX_IRQ_ROUTES ||
+		    routing.flags)
+			return -EINVAL;
 		if (routing.nr) {
 			urouting = argp;
 			entries = vmemdup_array_user(urouting->entries,
 						     routing.nr, sizeof(*entries));
 			if (IS_ERR(entries)) {
 				r = PTR_ERR(entries);
-				goto out;
+				return r;
 			}
 		}
 		r = kvm_set_irq_routing(plane->kvm, entries, routing.nr,
@@ -5010,7 +5002,6 @@ static long __kvm_plane_ioctl(struct kvm_plane *plane, unsigned int ioctl, unsig
 		r = -ENOTTY;
 	}
 
-out:
 	return r;
 }
 
@@ -5590,7 +5581,6 @@ static int kvm_vm_ioctl_create_plane(struct kvm *kvm, unsigned id)
 		goto put_kvm;
 	}
 
-	kvm->planes[id] = plane;
 	kvm->has_planes = true;
 	fd_install(fd, file);
 	return fd;
