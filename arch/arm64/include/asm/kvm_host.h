@@ -237,6 +237,9 @@ struct kvm_s2_mmu {
 struct kvm_arch_memory_slot {
 };
 
+struct kvm_arch_plane {
+};
+
 /**
  * struct kvm_smccc_features: Descriptor of the hypercall services exposed to the guests
  *
@@ -1440,6 +1443,10 @@ static inline bool kvm_system_needs_idmapped_vectors(void)
 {
 	return cpus_have_final_cap(ARM64_SPECTRE_V3A);
 }
+
+static inline void kvm_arch_init_plane(struct kvm_plane *plane) {}
+static inline void kvm_arch_free_plane(struct kvm_plane *plane) {}
+static inline void kvm_arch_sync_events(struct kvm *kvm) {}
 
 void kvm_init_host_debug_data(void);
 void kvm_debug_init_vhe(void);
