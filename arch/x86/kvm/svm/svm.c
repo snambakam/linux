@@ -2816,7 +2816,7 @@ static bool svm_pat_accesses_gpat(struct kvm_vcpu *vcpu, bool from_host)
 	 * KVM_GET/SET_NESTED_STATE are independent of each other and can
 	 * be ordered arbitrarily during save and restore.
 	 */
-	WARN_ON_ONCE(from_host && vcpu->wants_to_run);
+	WARN_ON_ONCE(from_host && kvm_vcpu_wants_to_run(vcpu));
 	return !from_host && is_guest_mode(vcpu) && l2_has_separate_pat(vcpu);
 }
 
@@ -3240,7 +3240,7 @@ static int interrupt_window_interception(struct kvm_vcpu *vcpu)
 	kvm_make_request(KVM_REQ_EVENT, vcpu);
 	svm_clear_vintr(to_svm(vcpu));
 
-	++vcpu->stat->irq_window_exits;
+	++vcpu->stat.irq_window_exits;
 	return 1;
 }
 
