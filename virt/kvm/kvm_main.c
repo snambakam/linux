@@ -4942,11 +4942,20 @@ out:
 }
 #endif
 
+static int kvm_vm_ioctl_check_extension_generic(struct kvm *kvm, long arg);
+
 static long __kvm_plane_ioctl(struct kvm_plane *plane, unsigned int ioctl, unsigned long arg)
 {
 	long r;
 
 	switch (ioctl) {
+	case KVM_CHECK_EXTENSION:
+		/* A plane cannot host planes of its own. */
+		if (arg == KVM_CAP_PLANES)
+			r = 0;
+		else
+			r = kvm_vm_ioctl_check_extension_generic(plane->kvm, arg);
+		break;
 	case KVM_CREATE_VCPU:
 		r = kvm_plane_ioctl_create_vcpu(plane, arg);
 		break;
