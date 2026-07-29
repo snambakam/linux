@@ -790,10 +790,8 @@ static void vm_vcpu_rm(struct kvm_vm *vm, struct kvm_vcpu *vcpu)
 void kvm_vm_release(struct kvm_vm *vmp)
 {
 	struct kvm_vcpu *vcpu, *tmp_vcpu;
-	struct kvm_plane_vcpu *plane_vcpu, *tmp_plane_vcpu;
-	struct kvm_plane *plane, *tmp_plane;
 
-	list_for_each_entry_safe(vcpu, tmp, &vmp->vcpus, list)
+	list_for_each_entry_safe(vcpu, tmp_vcpu, &vmp->vcpus, list)
 		vm_vcpu_rm(vmp, vcpu);
 
 	kvm_free_fd(vmp->fd);
@@ -1366,8 +1364,8 @@ struct kvm_plane_vcpu *__vm_plane_vcpu_add(struct kvm_vcpu *vcpu, struct kvm_pla
 	plane_vcpu = calloc(1, sizeof(*plane_vcpu));
 	TEST_ASSERT(plane_vcpu != NULL, "Insufficient Memory");
 
-	plane_vcpu->fd = __plane_ioctl(plane, KVM_CREATE_VCPU_PLANE, (void *)(unsigned long)vcpu->fd);
-	TEST_ASSERT_VM_VCPU_IOCTL(plane_vcpu->fd >= 0, KVM_CREATE_VCPU_PLANE, plane_vcpu->fd, plane->vm);
+	plane_vcpu->fd = __plane_ioctl(plane, KVM_CREATE_VCPU, (void *)(unsigned long)vcpu->id);
+	TEST_ASSERT_VM_VCPU_IOCTL(plane_vcpu->fd >= 0, KVM_CREATE_VCPU, plane_vcpu->fd, plane->vm);
 	plane_vcpu->id = vcpu->id;
 	plane_vcpu->plane0 = vcpu;
 

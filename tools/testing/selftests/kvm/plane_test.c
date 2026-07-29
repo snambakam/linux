@@ -21,7 +21,8 @@ void test_create_plane_errors(int max_planes)
 	struct kvm_vcpu *vcpu;
 	int planefd, plane_vcpufd;
 
-	vm = vm_create_barebones();
+	/* Planes require an in-kernel (split) IRQ chip. */
+	vm = vm_create_barebones_irqchip(true);
 	vcpu = __vm_vcpu_add(vm, 0);
 
 	planefd = __vm_ioctl(vm, KVM_CREATE_PLANE, (void *)(unsigned long)0);
@@ -34,9 +35,9 @@ void test_create_plane_errors(int max_planes)
 		    "Creating plane %d, expecting EINVAL. ret: %d, errno: %d",
 		    max_planes, planefd, errno);
 
-	plane_vcpufd = __vm_ioctl(vm, KVM_CREATE_VCPU_PLANE, (void *)(unsigned long)vcpu->fd);
-	TEST_ASSERT(plane_vcpufd == -1 && errno == ENOTTY,
-		    "Creating vCPU for plane 0, expecting ENOTTY. ret: %d, errno: %d",
+	plane_vcpufd = __vm_ioctl(vm, KVM_CREATE_VCPU, (void *)(unsigned long)vcpu->id);
+	TEST_ASSERT(plane_vcpufd == -1 && errno == EEXIST,
+		    "Creating existing vCPU for plane 0, expecting EEXIST. ret: %d, errno: %d",
 		    plane_vcpufd, errno);
 
 	kvm_vm_free(vm);
@@ -50,7 +51,7 @@ void test_create_plane(void)
 	struct kvm_plane *plane;
 	int r;
 
-	vm = vm_create_barebones();
+	vm = vm_create_barebones_irqchip(true);
 	vcpu = __vm_vcpu_add(vm, 0);
 
 	plane = vm_plane_add(vm, 1);
@@ -70,7 +71,7 @@ void test_create_plane(void)
 
 	__vm_plane_vcpu_add(vcpu, plane);
 
-	r = __plane_ioctl(plane, KVM_CREATE_VCPU_PLANE, (void *)(unsigned long)vcpu->fd);
+	r = __plane_ioctl(plane, KVM_CREATE_VCPU, (void *)(unsigned long)vcpu->id);
 	TEST_ASSERT(r == -1 && errno == EEXIST,
 		    "Creating vCPU again for plane 1. ret: %d, errno: %d",
 		    r, errno);
@@ -86,7 +87,10 @@ void test_create_plane(void)
 
 int main(int argc, char *argv[])
 {
-	int cap_planes = kvm_check_cap(KVM_CAP_PLANES);
+	struct kvm_vm *vm = vm_create_barebones_irqchip(true);
+	int cap_planes = vm_check_cap(vm, KVM_CAP_PLANES);
+
+	kvm_vm_free(vm);
 	TEST_REQUIRE(cap_planes);
 
 	ksft_print_header();
@@ -98,6 +102,8 @@ int main(int argc, char *argv[])
 
 	if (cap_planes > 1)
 		test_create_plane();
+	else
+		ksft_test_result_skip("plane creation requires KVM_CAP_PLANES > 1\n");
 
 	ksft_finished();
 }

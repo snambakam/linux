@@ -1070,6 +1070,18 @@ static inline struct kvm_vm *vm_create_barebones(void)
 	return ____vm_create(VM_SHAPE_DEFAULT);
 }
 
+static inline struct kvm_vm *vm_create_barebones_irqchip(bool split)
+{
+	struct kvm_vm *vm = vm_create_barebones();
+
+	if (split)
+		vm_enable_cap(vm, KVM_CAP_SPLIT_IRQCHIP, 24);
+	else
+		vm_create_irqchip(vm);
+
+	return vm;
+}
+
 static inline struct kvm_vm *vm_create_barebones_type(unsigned long type)
 {
 	const struct vm_shape shape = {
