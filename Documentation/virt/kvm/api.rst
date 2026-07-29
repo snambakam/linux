@@ -9116,26 +9116,6 @@ enabled, cmma can't be enabled anymore and pfmfi and the storage key
 interpretation are disabled. If cmma has already been enabled or the
 hpage_2g module parameter is not set to 1, -EINVAL is returned.
 
-7.48 KVM_CAP_PLANES_FPU
------------------------
-
-:Architectures: x86
-:Parameters: arg[0] is 0 if each vCPU plane has a separate FPU,
-             1 if the FPU is shared
-:Type: vm
-
-When enabled, such as KVM_SET_XSAVE or KVM_SET_FPU *are* available for
-vCPU on all planes, but they will read and write the same data that is presented
-to other planes.  Note that KVM_GET/SET_XSAVE also allows access to some
-registers that are *not* part of FPU state; right now this is just PKRU.
-Those are never shared.
-
-KVM_CAP_PLANES_FPU is experimental; userspace must *not* assume that
-KVM_CAP_PLANES_FPU is present on x86 for *any* VM type and different
-VM types may or may not allow enabling KVM_CAP_PLANES_FPU.  Like for other
-capabilities, KVM_CAP_PLANES_FPU can be queried on the VM file descriptor;
-KVM_CHECK_EXTENSION returns 1 if it is possible to enable shared FPU mode.
-
 8. Other capabilities.
 ======================
 
@@ -9686,6 +9666,10 @@ check for this capability on the VM file descriptor.
 
 When called on the system file descriptor, KVM returns the highest
 value supported on any machine type.
+
+When called on a plane file descriptor, KVM returns 0, because a
+plane cannot host planes of its own.  Other capabilities are
+forwarded to the plane's parent VM.
 
 8.47 KVM_CAP_S390_VSIE_ESAMODE
 ------------------------------
