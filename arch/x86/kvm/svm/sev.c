@@ -44,7 +44,8 @@
 #define GHCB_HV_FT_SUPPORTED	(GHCB_HV_FT_SNP			| \
 				 GHCB_HV_FT_SNP_AP_CREATION	| \
 				 GHCB_HV_FT_SNP_RINJ		| \
-				 GHCB_HV_FT_APIC_ID_LIST)
+				 GHCB_HV_FT_APIC_ID_LIST	| \
+				 GHCB_HV_FT_SNP_MULTI_VMPL)
 
 /*
  * The GHCB spec essentially states that all non-zero error codes other than
@@ -115,6 +116,7 @@ static unsigned long sev_me_mask;
 static unsigned int nr_asids;
 static unsigned long *sev_asid_bitmap;
 static unsigned long *sev_reclaim_asid_bitmap;
+static unsigned int vmpl_levels;
 
 static __always_inline void kvm_lockdep_assert_sev_lock_held(struct kvm *kvm)
 {
@@ -3095,6 +3097,9 @@ void __init sev_hardware_setup(void)
 	/* Set encryption bit location for SEV-ES guests */
 	sev_enc_bit = ebx & 0x3f;
 
+	/* Get the number of supported VMPL levels */
+	vmpl_levels = (ebx >> 12) & 0xf;
+
 	/* Maximum number of encrypted guests supported simultaneously */
 	max_sev_asid = ecx;
 	if (!max_sev_asid)
@@ -3215,9 +3220,10 @@ out:
 			sev_str_feature_state(sev_es_supported, vm_types & BIT(KVM_X86_SEV_ES_VM)),
 			min_sev_es_asid, max_sev_es_asid);
 	if (boot_cpu_has(X86_FEATURE_SEV_SNP))
-		pr_info("SEV-SNP %s (ASIDs %u - %u)\n",
+		pr_info("SEV-SNP %s (ASIDs %u - %u), VMPL Levels %u\n",
 			sev_str_feature_state(sev_snp_supported, vm_types & BIT(KVM_X86_SNP_VM)),
-			min_snp_asid, max_snp_asid);
+			min_snp_asid, max_snp_asid,
+			vmpl_levels);
 
 	sev_enabled = sev_supported;
 	sev_es_enabled = sev_es_supported;
@@ -4482,7 +4488,7 @@ static void sev_get_apic_ids(struct vcpu_svm *svm)
 	desc->num_entries = n;
 	kvm_for_each_vcpu(i, loop_vcpu, kvm) {
 		/*TODO: is this possible? */
-		if (i > n)
+		if (i >= n)
 			break;
 
 		desc->apic_ids[i] = loop_vcpu->vcpu_id;
@@ -4707,6 +4713,9 @@ static bool is_snp_only_vmgexit(u64 exit_code)
 	case SVM_VMGEXIT_GUEST_REQUEST:
 	case SVM_VMGEXIT_EXT_GUEST_REQUEST:
 	case SVM_VMGEXIT_PSC:
+	case SVM_VMGEXIT_HVDB_PAGE:
+	case SVM_VMGEXIT_HV_IPI:
+	case SVM_VMGEXIT_SNP_RUN_VMPL:
 		return true;
 	default:
 		return false;
@@ -5814,4 +5823,9 @@ bool sev_snp_blocked(enum inject_type type, struct kvm_vcpu *vcpu)
 	unmap_hvdb(vcpu, &hvdb_map);
 
 	return blocked;
+}
+
+int sev_snp_max_planes(struct kvm *kvm)
+{
+	return vmpl_levels;
 }
