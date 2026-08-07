@@ -119,7 +119,10 @@ u64 __read_mostly efer_reserved_bits = ~((u64)(EFER_SCE | EFER_LME | EFER_LMA));
 static u64 __read_mostly efer_reserved_bits = ~((u64)EFER_SCE);
 #endif
 
-#define KVM_EXIT_HYPERCALL_VALID_MASK (1 << KVM_HC_MAP_GPA_RANGE)
+#define KVM_EXIT_HYPERCALL_VALID_MASK			\
+	((1 << KVM_HC_MAP_GPA_RANGE)		|	\
+	 (1 << KVM_HC_VM_PLANES_CONFIG)		|	\
+	 (1 << KVM_HC_VM_PLANES_ACTIVATE))
 
 #define KVM_CAP_PMU_VALID_MASK KVM_PMU_CAP_DISABLE
 
@@ -10559,6 +10562,30 @@ int ____kvm_emulate_hypercall(struct kvm_vcpu *vcpu, int cpl,
 		vcpu->arch.complete_userspace_io = complete_hypercall;
 		return 0;
 	}
+	case KVM_HC_VM_PLANES_CONFIG:
+	case KVM_HC_VM_PLANES_ACTIVATE:
+		/*
+		 * VM plane setup: hand off to the VMM, which allocates plane
+		 * memory (CONFIG) and creates + activates the plane vCPU
+		 * (ACTIVATE).  Serviced entirely in userspace.
+		 */
+		if (!user_exit_on_hypercall(vcpu->kvm, nr))
+			break;
+
+		vcpu->run->exit_reason        = KVM_EXIT_HYPERCALL;
+		vcpu->run->hypercall.nr       = nr;
+		vcpu->run->hypercall.ret      = 0;
+		vcpu->run->hypercall.args[0]  = a0;
+		vcpu->run->hypercall.args[1]  = a1;
+		vcpu->run->hypercall.args[2]  = a2;
+		vcpu->run->hypercall.args[3]  = a3;
+		vcpu->run->hypercall.flags    = 0;
+		if (op_64_bit)
+			vcpu->run->hypercall.flags |= KVM_EXIT_HYPERCALL_LONG_MODE;
+
+		WARN_ON_ONCE(vcpu->run->hypercall.flags & KVM_EXIT_HYPERCALL_MBZ);
+		vcpu->arch.complete_userspace_io = complete_hypercall;
+		return 0;
 	default:
 		ret = -KVM_ENOSYS;
 		break;
