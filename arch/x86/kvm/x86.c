@@ -478,7 +478,8 @@ static unsigned int num_msr_based_features;
 
 unsigned kvm_x86_default_max_planes(struct kvm *kvm)
 {
-	return 1;
+	/* Support a normal plane (0) and one secure plane (1) for VBS. */
+	return 2;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_x86_default_max_planes);
 
